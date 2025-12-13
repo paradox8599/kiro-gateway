@@ -132,6 +132,7 @@ def parse_bracket_tool_calls(response_text: str) -> List[Dict[str, Any]]:
         try:
             args = json.loads(json_str)
             tool_call_id = generate_tool_call_id()
+            # index будет добавлен позже при формировании финального ответа
             tool_calls.append({
                 "id": tool_call_id,
                 "type": "function",
@@ -148,7 +149,12 @@ def parse_bracket_tool_calls(response_text: str) -> List[Dict[str, Any]]:
 
 def deduplicate_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Удаляет дубликаты tool calls по имени и аргументам.
+    Удаляет дубликаты tool calls.
+    
+    Дедупликация происходит по двум критериям:
+    1. По id - если есть несколько tool calls с одинаковым id, оставляем тот у которого
+       больше аргументов (не пустой "{}")
+    2. По name+arguments - удаляем полные дубликаты
     
     Args:
         tool_calls: Список tool calls
@@ -156,14 +162,47 @@ def deduplicate_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, A
     Returns:
         Список уникальных tool calls
     """
+    # Сначала дедупликация по id - оставляем tool call с непустыми аргументами
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for tc in tool_calls:
+        tc_id = tc.get("id", "")
+        if not tc_id:
+            # Без id - добавляем как есть (будет дедуплицировано по name+args)
+            continue
+        
+        existing = by_id.get(tc_id)
+        if existing is None:
+            by_id[tc_id] = tc
+        else:
+            # Есть дубликат по id - оставляем тот у которого больше аргументов
+            existing_args = existing.get("function", {}).get("arguments", "{}")
+            current_args = tc.get("function", {}).get("arguments", "{}")
+            
+            # Предпочитаем непустые аргументы
+            if current_args != "{}" and (existing_args == "{}" or len(current_args) > len(existing_args)):
+                logger.debug(f"Replacing tool call {tc_id} with better arguments: {len(existing_args)} -> {len(current_args)}")
+                by_id[tc_id] = tc
+    
+    # Собираем tool calls: сначала те что с id, потом без id
+    result_with_id = list(by_id.values())
+    result_without_id = [tc for tc in tool_calls if not tc.get("id")]
+    
+    # Теперь дедупликация по name+arguments для всех
     seen = set()
     unique = []
     
-    for tc in tool_calls:
-        key = f"{tc['function']['name']}-{tc['function']['arguments']}"
+    for tc in result_with_id + result_without_id:
+        # Защита от None в function
+        func = tc.get("function") or {}
+        func_name = func.get("name") or ""
+        func_args = func.get("arguments") or "{}"
+        key = f"{func_name}-{func_args}"
         if key not in seen:
             seen.add(key)
             unique.append(tc)
+    
+    if len(tool_calls) != len(unique):
+        logger.debug(f"Deduplicated tool calls: {len(tool_calls)} -> {len(unique)}")
     
     return unique
 
@@ -313,12 +352,19 @@ class AwsEventStreamParser:
         if self.current_tool_call:
             self._finalize_tool_call()
         
+        # input может быть строкой или объектом
+        input_data = data.get('input', '')
+        if isinstance(input_data, dict):
+            input_str = json.dumps(input_data)
+        else:
+            input_str = str(input_data) if input_data else ''
+        
         self.current_tool_call = {
             "id": data.get('toolUseId', generate_tool_call_id()),
             "type": "function",
             "function": {
                 "name": data.get('name', ''),
-                "arguments": data.get('input', '')
+                "arguments": input_str
             }
         }
         
@@ -330,7 +376,13 @@ class AwsEventStreamParser:
     def _process_tool_input_event(self, data: dict) -> Optional[Dict[str, Any]]:
         """Обрабатывает продолжение input для tool call."""
         if self.current_tool_call:
-            self.current_tool_call['function']['arguments'] += data.get('input', '')
+            # input может быть строкой или объектом
+            input_data = data.get('input', '')
+            if isinstance(input_data, dict):
+                input_str = json.dumps(input_data)
+            else:
+                input_str = str(input_data) if input_data else ''
+            self.current_tool_call['function']['arguments'] += input_str
         return None
     
     def _process_tool_stop_event(self, data: dict) -> Optional[Dict[str, Any]]:
@@ -344,14 +396,36 @@ class AwsEventStreamParser:
         if not self.current_tool_call:
             return
         
-        # Пытаемся распарсить arguments как JSON
+        # Пытаемся распарсить и нормализовать arguments как JSON
         args = self.current_tool_call['function']['arguments']
+        tool_name = self.current_tool_call['function'].get('name', 'unknown')
+        
+        logger.debug(f"Finalizing tool call '{tool_name}' with raw arguments: {repr(args)[:200]}")
+        
         if isinstance(args, str):
-            try:
-                parsed = json.loads(args)
-                self.current_tool_call['function']['arguments'] = json.dumps(parsed)
-            except json.JSONDecodeError:
-                pass
+            if args.strip():
+                try:
+                    parsed = json.loads(args)
+                    # Убеждаемся что результат - строка JSON
+                    self.current_tool_call['function']['arguments'] = json.dumps(parsed)
+                    logger.debug(f"Tool '{tool_name}' arguments parsed successfully: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
+                except json.JSONDecodeError as e:
+                    # Если не удалось распарсить, оставляем пустой объект
+                    logger.warning(f"Failed to parse tool '{tool_name}' arguments: {e}. Raw: {args[:200]}")
+                    self.current_tool_call['function']['arguments'] = "{}"
+            else:
+                # Пустая строка - используем пустой объект
+                # Это нормальное поведение для дубликатов tool calls от Kiro
+                logger.debug(f"Tool '{tool_name}' has empty arguments string (will be deduplicated)")
+                self.current_tool_call['function']['arguments'] = "{}"
+        elif isinstance(args, dict):
+            # Если уже объект - сериализуем в строку
+            self.current_tool_call['function']['arguments'] = json.dumps(args)
+            logger.debug(f"Tool '{tool_name}' arguments already dict with keys: {list(args.keys())}")
+        else:
+            # Неизвестный тип - пустой объект
+            logger.warning(f"Tool '{tool_name}' has unexpected arguments type: {type(args)}")
+            self.current_tool_call['function']['arguments'] = "{}"
         
         self.tool_calls.append(self.current_tool_call)
         self.current_tool_call = None

@@ -234,6 +234,154 @@ class TestMergeAdjacentMessages:
         assert result[0].role == "user"
         assert result[1].role == "assistant"
         assert result[2].role == "user"
+    
+    def test_converts_tool_message_to_user_with_tool_result(self):
+        """
+        Что он делает: Проверяет преобразование tool message в user message с tool_result.
+        Цель: Убедиться, что role="tool" преобразуется в user message с tool_results content.
+        """
+        print("Настройка: Tool message...")
+        messages = [
+            ChatMessage(role="tool", content="Tool result text", tool_call_id="call_123")
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        print(f"Сравниваем длину: Ожидалось 1, Получено {len(result)}")
+        assert len(result) == 1
+        assert result[0].role == "user"
+        
+        print("Проверяем content содержит tool_result...")
+        assert isinstance(result[0].content, list)
+        assert len(result[0].content) == 1
+        assert result[0].content[0]["type"] == "tool_result"
+        assert result[0].content[0]["tool_use_id"] == "call_123"
+        assert result[0].content[0]["content"] == "Tool result text"
+    
+    def test_converts_multiple_tool_messages_to_single_user_message(self):
+        """
+        Что он делает: Проверяет объединение нескольких tool messages в один user message.
+        Цель: Убедиться, что несколько tool results объединяются в один user message.
+        """
+        print("Настройка: Несколько tool messages подряд...")
+        messages = [
+            ChatMessage(role="tool", content="Result 1", tool_call_id="call_1"),
+            ChatMessage(role="tool", content="Result 2", tool_call_id="call_2"),
+            ChatMessage(role="tool", content="Result 3", tool_call_id="call_3")
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        print(f"Сравниваем длину: Ожидалось 1, Получено {len(result)}")
+        assert len(result) == 1
+        assert result[0].role == "user"
+        
+        print("Проверяем content содержит все tool_results...")
+        assert isinstance(result[0].content, list)
+        assert len(result[0].content) == 3
+        
+        tool_use_ids = [item["tool_use_id"] for item in result[0].content]
+        assert "call_1" in tool_use_ids
+        assert "call_2" in tool_use_ids
+        assert "call_3" in tool_use_ids
+    
+    def test_tool_message_followed_by_user_message(self):
+        """
+        Что он делает: Проверяет tool message перед user message.
+        Цель: Убедиться, что tool results и user message объединяются.
+        """
+        print("Настройка: Tool message + user message...")
+        messages = [
+            ChatMessage(role="tool", content="Tool result", tool_call_id="call_1"),
+            ChatMessage(role="user", content="Continue please")
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        print(f"Сравниваем длину: Ожидалось 1, Получено {len(result)}")
+        # Tool message преобразуется в user, затем объединяется с user
+        assert len(result) == 1
+        assert result[0].role == "user"
+    
+    def test_assistant_tool_user_sequence(self):
+        """
+        Что он делает: Проверяет последовательность assistant -> tool -> user.
+        Цель: Убедиться, что tool message корректно вставляется между assistant и user.
+        """
+        print("Настройка: assistant -> tool -> user...")
+        messages = [
+            ChatMessage(role="assistant", content="I'll call a tool"),
+            ChatMessage(role="tool", content="Tool output", tool_call_id="call_abc"),
+            ChatMessage(role="user", content="Thanks!")
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        # assistant остаётся, tool+user объединяются в один user
+        assert len(result) == 2
+        assert result[0].role == "assistant"
+        assert result[1].role == "user"
+    
+    def test_tool_message_with_empty_content(self):
+        """
+        Что он делает: Проверяет tool message с пустым content.
+        Цель: Убедиться, что пустой результат заменяется на "(empty result)".
+        """
+        print("Настройка: Tool message с пустым content...")
+        messages = [
+            ChatMessage(role="tool", content="", tool_call_id="call_empty")
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        assert len(result) == 1
+        assert result[0].content[0]["content"] == "(empty result)"
+    
+    def test_tool_message_with_none_tool_call_id(self):
+        """
+        Что он делает: Проверяет tool message без tool_call_id.
+        Цель: Убедиться, что отсутствующий tool_call_id заменяется на пустую строку.
+        """
+        print("Настройка: Tool message без tool_call_id...")
+        messages = [
+            ChatMessage(role="tool", content="Result", tool_call_id=None)
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        assert len(result) == 1
+        assert result[0].content[0]["tool_use_id"] == ""
+    
+    def test_merges_list_contents_correctly(self):
+        """
+        Что он делает: Проверяет объединение list contents.
+        Цель: Убедиться, что списки объединяются корректно.
+        """
+        print("Настройка: Два user сообщения с list content...")
+        messages = [
+            ChatMessage(role="user", content=[{"type": "text", "text": "Part 1"}]),
+            ChatMessage(role="user", content=[{"type": "text", "text": "Part 2"}])
+        ]
+        
+        print("Действие: Объединение сообщений...")
+        result = merge_adjacent_messages(messages)
+        
+        print(f"Результат: {result}")
+        assert len(result) == 1
+        assert isinstance(result[0].content, list)
+        assert len(result[0].content) == 2
 
 
 class TestBuildKiroHistory:

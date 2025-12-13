@@ -160,6 +160,16 @@ DEFAULT_MAX_INPUT_TOKENS: int = 200000
 TOOL_DESCRIPTION_MAX_LENGTH: int = int(os.getenv("TOOL_DESCRIPTION_MAX_LENGTH", "10000"))
 
 # ==================================================================================================
+# Logging Settings
+# ==================================================================================================
+
+# Log level for the application
+# Available levels: TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL
+# Default: INFO (recommended for production)
+# Set to DEBUG for detailed troubleshooting
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# ==================================================================================================
 # Debug Settings
 # ==================================================================================================
 

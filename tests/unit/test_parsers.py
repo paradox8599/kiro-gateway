@@ -283,6 +283,108 @@ class TestDeduplicateToolCalls:
         
         print(f"Сравниваем результат: Ожидалось [], Получено {result}")
         assert result == []
+    
+    def test_deduplicates_by_id_keeps_one_with_arguments(self):
+        """
+        Что он делает: Проверяет дедупликацию по id с сохранением tool call с аргументами.
+        Цель: Убедиться, что при дубликатах по id сохраняется тот, у которого есть аргументы.
+        """
+        print("Настройка: Два tool calls с одинаковым id, один с аргументами, один пустой...")
+        tool_calls = [
+            {"id": "call_123", "function": {"name": "func", "arguments": "{}"}},
+            {"id": "call_123", "function": {"name": "func", "arguments": '{"location": "Moscow"}'}},
+        ]
+        
+        print("Действие: Дедупликация...")
+        result = deduplicate_tool_calls(tool_calls)
+        
+        print(f"Результат: {result}")
+        print(f"Сравниваем длину: Ожидалось 1, Получено {len(result)}")
+        assert len(result) == 1
+        
+        print("Проверяем, что сохранился tool call с аргументами...")
+        assert "Moscow" in result[0]["function"]["arguments"]
+    
+    def test_deduplicates_by_id_prefers_longer_arguments(self):
+        """
+        Что он делает: Проверяет, что при дубликатах по id предпочитаются более длинные аргументы.
+        Цель: Убедиться, что сохраняется tool call с более полными аргументами.
+        """
+        print("Настройка: Два tool calls с одинаковым id, разной длины аргументов...")
+        tool_calls = [
+            {"id": "call_abc", "function": {"name": "search", "arguments": '{"q": "test"}'}},
+            {"id": "call_abc", "function": {"name": "search", "arguments": '{"q": "test", "limit": 10, "offset": 0}'}},
+        ]
+        
+        print("Действие: Дедупликация...")
+        result = deduplicate_tool_calls(tool_calls)
+        
+        print(f"Результат: {result}")
+        assert len(result) == 1
+        
+        print("Проверяем, что сохранился tool call с более длинными аргументами...")
+        assert "limit" in result[0]["function"]["arguments"]
+    
+    def test_deduplicates_empty_arguments_replaced_by_non_empty(self):
+        """
+        Что он делает: Проверяет замену пустых аргументов на непустые.
+        Цель: Убедиться, что "{}" заменяется на реальные аргументы.
+        """
+        print("Настройка: Первый tool call с пустыми аргументами, второй с реальными...")
+        tool_calls = [
+            {"id": "call_xyz", "function": {"name": "get_weather", "arguments": "{}"}},
+            {"id": "call_xyz", "function": {"name": "get_weather", "arguments": '{"city": "London"}'}},
+        ]
+        
+        print("Действие: Дедупликация...")
+        result = deduplicate_tool_calls(tool_calls)
+        
+        print(f"Результат: {result}")
+        assert len(result) == 1
+        assert result[0]["function"]["arguments"] == '{"city": "London"}'
+    
+    def test_handles_tool_calls_without_id(self):
+        """
+        Что он делает: Проверяет обработку tool calls без id.
+        Цель: Убедиться, что tool calls без id дедуплицируются по name+arguments.
+        """
+        print("Настройка: Tool calls без id...")
+        tool_calls = [
+            {"id": "", "function": {"name": "func", "arguments": '{"a": 1}'}},
+            {"id": "", "function": {"name": "func", "arguments": '{"a": 1}'}},
+            {"id": "", "function": {"name": "func", "arguments": '{"b": 2}'}},
+        ]
+        
+        print("Действие: Дедупликация...")
+        result = deduplicate_tool_calls(tool_calls)
+        
+        print(f"Результат: {result}")
+        # Два уникальных по name+arguments
+        assert len(result) == 2
+    
+    def test_mixed_with_and_without_id(self):
+        """
+        Что он делает: Проверяет смешанный список с id и без.
+        Цель: Убедиться, что оба типа обрабатываются корректно.
+        """
+        print("Настройка: Смешанный список...")
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "func1", "arguments": '{"x": 1}'}},
+            {"id": "call_1", "function": {"name": "func1", "arguments": "{}"}},  # Дубликат по id
+            {"id": "", "function": {"name": "func2", "arguments": '{"y": 2}'}},
+            {"id": "", "function": {"name": "func2", "arguments": '{"y": 2}'}},  # Дубликат по name+args
+        ]
+        
+        print("Действие: Дедупликация...")
+        result = deduplicate_tool_calls(tool_calls)
+        
+        print(f"Результат: {result}")
+        # call_1 с аргументами + func2 один раз
+        assert len(result) == 2
+        
+        # Проверяем, что call_1 сохранил аргументы
+        call_1 = next(tc for tc in result if tc["id"] == "call_1")
+        assert call_1["function"]["arguments"] == '{"x": 1}'
 
 
 class TestAwsEventStreamParserInitialization:
@@ -563,6 +665,160 @@ class TestAwsEventStreamParserReset:
         assert aws_event_parser.last_content is None
         assert aws_event_parser.current_tool_call is None
         assert aws_event_parser.tool_calls == []
+
+
+class TestAwsEventStreamParserFinalizeToolCall:
+    """Тесты метода _finalize_tool_call для обработки разных типов input."""
+    
+    def test_finalize_with_string_arguments(self, aws_event_parser):
+        """
+        Что он делает: Проверяет финализацию tool call со строковыми аргументами.
+        Цель: Убедиться, что строка JSON парсится и сериализуется обратно.
+        """
+        print("Настройка: Tool call со строковыми аргументами...")
+        aws_event_parser.current_tool_call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "test_func",
+                "arguments": '{"key": "value"}'
+            }
+        }
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"Результат: {aws_event_parser.tool_calls}")
+        assert len(aws_event_parser.tool_calls) == 1
+        assert aws_event_parser.tool_calls[0]["function"]["arguments"] == '{"key": "value"}'
+    
+    def test_finalize_with_dict_arguments(self, aws_event_parser):
+        """
+        Что он делает: Проверяет финализацию tool call с dict аргументами.
+        Цель: Убедиться, что dict сериализуется в JSON строку.
+        """
+        print("Настройка: Tool call с dict аргументами...")
+        aws_event_parser.current_tool_call = {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+                "name": "test_func",
+                "arguments": {"location": "Moscow", "units": "celsius"}
+            }
+        }
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"Результат: {aws_event_parser.tool_calls}")
+        assert len(aws_event_parser.tool_calls) == 1
+        
+        args = aws_event_parser.tool_calls[0]["function"]["arguments"]
+        print(f"Аргументы: {args}")
+        assert isinstance(args, str)
+        assert "Moscow" in args
+        assert "celsius" in args
+    
+    def test_finalize_with_empty_string_arguments(self, aws_event_parser):
+        """
+        Что он делает: Проверяет финализацию tool call с пустой строкой аргументов.
+        Цель: Убедиться, что пустая строка заменяется на "{}".
+        """
+        print("Настройка: Tool call с пустой строкой аргументов...")
+        aws_event_parser.current_tool_call = {
+            "id": "call_3",
+            "type": "function",
+            "function": {
+                "name": "test_func",
+                "arguments": ""
+            }
+        }
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"Результат: {aws_event_parser.tool_calls}")
+        assert len(aws_event_parser.tool_calls) == 1
+        assert aws_event_parser.tool_calls[0]["function"]["arguments"] == "{}"
+    
+    def test_finalize_with_whitespace_only_arguments(self, aws_event_parser):
+        """
+        Что он делает: Проверяет финализацию tool call с пробельными аргументами.
+        Цель: Убедиться, что строка из пробелов заменяется на "{}".
+        """
+        print("Настройка: Tool call с пробельными аргументами...")
+        aws_event_parser.current_tool_call = {
+            "id": "call_4",
+            "type": "function",
+            "function": {
+                "name": "test_func",
+                "arguments": "   "
+            }
+        }
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"Результат: {aws_event_parser.tool_calls}")
+        assert len(aws_event_parser.tool_calls) == 1
+        assert aws_event_parser.tool_calls[0]["function"]["arguments"] == "{}"
+    
+    def test_finalize_with_invalid_json_arguments(self, aws_event_parser):
+        """
+        Что он делает: Проверяет финализацию tool call с невалидным JSON.
+        Цель: Убедиться, что невалидный JSON заменяется на "{}".
+        """
+        print("Настройка: Tool call с невалидным JSON...")
+        aws_event_parser.current_tool_call = {
+            "id": "call_5",
+            "type": "function",
+            "function": {
+                "name": "test_func",
+                "arguments": "not valid json {"
+            }
+        }
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"Результат: {aws_event_parser.tool_calls}")
+        assert len(aws_event_parser.tool_calls) == 1
+        assert aws_event_parser.tool_calls[0]["function"]["arguments"] == "{}"
+    
+    def test_finalize_with_none_current_tool_call(self, aws_event_parser):
+        """
+        Что он делает: Проверяет финализацию когда current_tool_call is None.
+        Цель: Убедиться, что ничего не происходит при None.
+        """
+        print("Настройка: current_tool_call = None...")
+        aws_event_parser.current_tool_call = None
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"Результат: {aws_event_parser.tool_calls}")
+        assert len(aws_event_parser.tool_calls) == 0
+    
+    def test_finalize_clears_current_tool_call(self, aws_event_parser):
+        """
+        Что он делает: Проверяет, что финализация очищает current_tool_call.
+        Цель: Убедиться, что после финализации current_tool_call = None.
+        """
+        print("Настройка: Tool call...")
+        aws_event_parser.current_tool_call = {
+            "id": "call_6",
+            "type": "function",
+            "function": {
+                "name": "test_func",
+                "arguments": "{}"
+            }
+        }
+        
+        print("Действие: Финализация tool call...")
+        aws_event_parser._finalize_tool_call()
+        
+        print(f"current_tool_call после финализации: {aws_event_parser.current_tool_call}")
+        assert aws_event_parser.current_tool_call is None
 
 
 class TestAwsEventStreamParserEdgeCases:

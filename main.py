@@ -44,6 +44,7 @@ from kiro_gateway.config import (
     REGION,
     KIRO_CREDS_FILE,
     PROXY_API_KEY,
+    LOG_LEVEL,
 )
 from kiro_gateway.auth import KiroAuthManager
 from kiro_gateway.cache import ModelInfoCache
@@ -55,6 +56,7 @@ from kiro_gateway.exceptions import validation_exception_handler
 logger.remove()
 logger.add(
     sys.stderr,
+    level=LOG_LEVEL,
     colorize=True,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )

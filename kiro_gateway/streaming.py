@@ -143,6 +143,31 @@ async def stream_kiro_to_openai(
         
         # Отправляем tool calls если есть
         if all_tool_calls:
+            logger.debug(f"Processing {len(all_tool_calls)} tool calls for streaming response")
+            
+            # Добавляем обязательное поле index к каждому tool_call
+            # согласно спецификации OpenAI API для streaming
+            indexed_tool_calls = []
+            for idx, tc in enumerate(all_tool_calls):
+                # Извлекаем function с защитой от None
+                func = tc.get("function") or {}
+                # Используем "or" для защиты от явного None в значениях
+                tool_name = func.get("name") or ""
+                tool_args = func.get("arguments") or "{}"
+                
+                logger.debug(f"Tool call [{idx}] '{tool_name}': id={tc.get('id')}, args_length={len(tool_args)}")
+                
+                indexed_tc = {
+                    "index": idx,
+                    "id": tc.get("id"),
+                    "type": tc.get("type", "function"),
+                    "function": {
+                        "name": tool_name,
+                        "arguments": tool_args
+                    }
+                }
+                indexed_tool_calls.append(indexed_tc)
+            
             tool_calls_chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -150,7 +175,7 @@ async def stream_kiro_to_openai(
                 "model": model,
                 "choices": [{
                     "index": 0,
-                    "delta": {"tool_calls": all_tool_calls},
+                    "delta": {"tool_calls": indexed_tool_calls},
                     "finish_reason": None
                 }]
             }
@@ -245,7 +270,22 @@ async def collect_stream_response(
     # Формируем финальный ответ
     message = {"role": "assistant", "content": full_content}
     if tool_calls:
-        message["tool_calls"] = tool_calls
+        # Для non-streaming ответа удаляем поле index из tool_calls,
+        # так как оно требуется только для streaming chunks
+        cleaned_tool_calls = []
+        for tc in tool_calls:
+            # Извлекаем function с защитой от None
+            func = tc.get("function") or {}
+            cleaned_tc = {
+                "id": tc.get("id"),
+                "type": tc.get("type", "function"),
+                "function": {
+                    "name": func.get("name", ""),
+                    "arguments": func.get("arguments", "{}")
+                }
+            }
+            cleaned_tool_calls.append(cleaned_tc)
+        message["tool_calls"] = cleaned_tool_calls
     
     finish_reason = "tool_calls" if tool_calls else "stop"
     

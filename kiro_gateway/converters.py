@@ -78,10 +78,12 @@ def extract_text_content(content: Any) -> str:
 
 def merge_adjacent_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
     """
-    Объединяет соседние сообщения с одинаковой ролью.
+    Объединяет соседние сообщения с одинаковой ролью и обрабатывает tool messages.
     
     Kiro API не принимает несколько сообщений подряд от одного role.
     Эта функция объединяет такие сообщения в одно.
+    
+    Tool messages (role="tool") преобразуются в user messages с tool_results.
     
     Args:
         messages: Список сообщений
@@ -103,8 +105,46 @@ def merge_adjacent_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
     if not messages:
         return []
     
-    merged = []
+    # Сначала преобразуем tool messages в user messages с tool_results
+    processed = []
+    pending_tool_results = []
+    
     for msg in messages:
+        if msg.role == "tool":
+            # Собираем tool results
+            tool_result = {
+                "type": "tool_result",
+                "tool_use_id": msg.tool_call_id or "",
+                "content": extract_text_content(msg.content) or "(empty result)"
+            }
+            pending_tool_results.append(tool_result)
+            logger.debug(f"Collected tool result for tool_call_id={msg.tool_call_id}")
+        else:
+            # Если есть накопленные tool results, создаём user message с ними
+            if pending_tool_results:
+                # Создаём user message с tool_results
+                tool_results_msg = ChatMessage(
+                    role="user",
+                    content=pending_tool_results.copy()
+                )
+                processed.append(tool_results_msg)
+                pending_tool_results.clear()
+                logger.debug(f"Created user message with {len(tool_results_msg.content)} tool results")
+            
+            processed.append(msg)
+    
+    # Если остались tool results в конце
+    if pending_tool_results:
+        tool_results_msg = ChatMessage(
+            role="user",
+            content=pending_tool_results.copy()
+        )
+        processed.append(tool_results_msg)
+        logger.debug(f"Created final user message with {len(pending_tool_results)} tool results")
+    
+    # Теперь объединяем соседние сообщения с одинаковой ролью
+    merged = []
+    for msg in processed:
         if not merged:
             merged.append(msg)
             continue
@@ -112,9 +152,17 @@ def merge_adjacent_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
         last = merged[-1]
         if msg.role == last.role:
             # Объединяем контент
-            last_text = extract_text_content(last.content)
-            current_text = extract_text_content(msg.content)
-            last.content = f"{last_text}\n{current_text}"
+            # Если оба контента - списки, объединяем списки
+            if isinstance(last.content, list) and isinstance(msg.content, list):
+                last.content = last.content + msg.content
+            elif isinstance(last.content, list):
+                last.content = last.content + [{"type": "text", "text": extract_text_content(msg.content)}]
+            elif isinstance(msg.content, list):
+                last.content = [{"type": "text", "text": extract_text_content(last.content)}] + msg.content
+            else:
+                last_text = extract_text_content(last.content)
+                current_text = extract_text_content(msg.content)
+                last.content = f"{last_text}\n{current_text}"
             logger.debug(f"Merged adjacent messages with role {msg.role}")
         else:
             merged.append(msg)
@@ -252,7 +300,7 @@ def process_tools_with_long_descriptions(
             # Description слишком длинный - переносим в system prompt
             tool_name = tool.function.name
             
-            logger.info(
+            logger.debug(
                 f"Tool '{tool_name}' has long description ({len(description)} chars > {TOOL_DESCRIPTION_MAX_LENGTH}), "
                 f"moving to system prompt"
             )
