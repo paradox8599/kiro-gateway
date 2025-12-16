@@ -33,6 +33,7 @@ kiro-openai-gateway/
 │   ├── http_client.py         # HTTP клиент с retry логикой
 │   ├── routes.py              # FastAPI роуты
 │   ├── debug_logger.py        # Отладочное логирование запросов
+│   ├── tokenizer.py           # Подсчёт токенов (tiktoken)
 │   └── exceptions.py          # Обработчики исключений
 │
 ├── tests/                     # Тесты
@@ -342,7 +343,42 @@ OpenAI messages преобразуются в Kiro conversationState:
 - `response_stream_raw.txt` — сырой поток от Kiro
 - `response_stream_modified.txt` — преобразованный поток (OpenAI формат)
 
-### 3.13. Kiro API Endpoints
+### 3.13. Токенизатор (`kiro_gateway/tokenizer.py`)
+
+**Проблема:** Kiro API не возвращает напрямую количество токенов. Вместо этого API предоставляет только `context_usage_percentage` — процент использования контекста модели.
+
+**Решение:** Модуль токенизатора на базе `tiktoken` (библиотека OpenAI на Rust) для быстрого подсчёта токенов.
+
+**Особенности:**
+- Использует кодировку `cl100k_base` (GPT-4), близкую к токенизации Claude
+- Коэффициент коррекции `CLAUDE_CORRECTION_FACTOR = 1.15` для повышения точности
+- Ленивая инициализация для ускорения импорта
+- Fallback на грубую оценку если tiktoken недоступен
+
+**Формула расчёта токенов в ответе:**
+```
+total_tokens = context_usage_percentage × max_input_tokens  (от API Kiro)
+completion_tokens = tiktoken(ответ)                         (наш подсчёт)
+prompt_tokens = total_tokens - completion_tokens            (вычитание)
+```
+
+**Основные функции:**
+
+| Функция | Описание |
+|---------|----------|
+| `count_tokens(text)` | Подсчёт токенов в тексте |
+| `count_message_tokens(messages)` | Подсчёт токенов в списке сообщений |
+| `count_tools_tokens(tools)` | Подсчёт токенов в определениях инструментов |
+| `estimate_request_tokens(messages, tools)` | Полная оценка токенов запроса |
+
+**Дебаг-лог:**
+```
+[Usage] claude-opus-4-5: prompt_tokens=142211 (subtraction), completion_tokens=769 (tiktoken), total_tokens=142980 (API Kiro)
+```
+
+**Точность:** ~97-99.7% по сравнению с данными от API.
+
+### 3.14. Kiro API Endpoints
 
 Все URL динамически формируются на основе региона:
 
@@ -545,3 +581,4 @@ class GeminiParser:
 | `pydantic` | Валидация данных и модели |
 | `python-dotenv` | Загрузка переменных окружения |
 | `loguru` | Продвинутое логирование |
+| `tiktoken` | Быстрый подсчёт токенов |

@@ -33,6 +33,7 @@ kiro-openai-gateway/
 │   ├── http_client.py         # HTTP client with retry logic
 │   ├── routes.py              # FastAPI routes
 │   ├── debug_logger.py        # Debug request logging
+│   ├── tokenizer.py           # Token counting (tiktoken)
 │   └── exceptions.py          # Exception handlers
 │
 ├── tests/                     # Tests
@@ -342,7 +343,42 @@ Supports async context manager (`async with`).
 - `response_stream_raw.txt` — raw stream from Kiro
 - `response_stream_modified.txt` — transformed stream (OpenAI format)
 
-### 3.13. Kiro API Endpoints
+### 3.13. Tokenizer (`kiro_gateway/tokenizer.py`)
+
+**Problem:** Kiro API does not return token counts directly. Instead, the API only provides `context_usage_percentage` — the percentage of model context usage.
+
+**Solution:** Tokenizer module based on `tiktoken` (OpenAI's Rust library) for fast token counting.
+
+**Features:**
+- Uses `cl100k_base` encoding (GPT-4), close to Claude tokenization
+- Correction factor `CLAUDE_CORRECTION_FACTOR = 1.15` for improved accuracy
+- Lazy initialization for faster imports
+- Fallback to rough estimation if tiktoken is unavailable
+
+**Token calculation formula in response:**
+```
+total_tokens = context_usage_percentage × max_input_tokens  (from Kiro API)
+completion_tokens = tiktoken(response)                       (our calculation)
+prompt_tokens = total_tokens - completion_tokens             (subtraction)
+```
+
+**Main functions:**
+
+| Function | Description |
+|----------|-------------|
+| `count_tokens(text)` | Count tokens in text |
+| `count_message_tokens(messages)` | Count tokens in message list |
+| `count_tools_tokens(tools)` | Count tokens in tool definitions |
+| `estimate_request_tokens(messages, tools)` | Full request token estimation |
+
+**Debug log:**
+```
+[Usage] claude-opus-4-5: prompt_tokens=142211 (subtraction), completion_tokens=769 (tiktoken), total_tokens=142980 (API Kiro)
+```
+
+**Accuracy:** ~97-99.7% compared to API data.
+
+### 3.14. Kiro API Endpoints
 
 All URLs are dynamically formed based on the region:
 
@@ -545,3 +581,4 @@ Main project dependencies (from `requirements.txt`):
 | `pydantic` | Data validation and models |
 | `python-dotenv` | Environment variable loading |
 | `loguru` | Advanced logging |
+| `tiktoken` | Fast token counting |

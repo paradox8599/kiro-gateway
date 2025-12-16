@@ -37,6 +37,7 @@ from loguru import logger
 from kiro_gateway.parsers import AwsEventStreamParser, parse_bracket_tool_calls, deduplicate_tool_calls
 from kiro_gateway.utils import generate_completion_id
 from kiro_gateway.config import FIRST_TOKEN_TIMEOUT, FIRST_TOKEN_MAX_RETRIES
+from kiro_gateway.tokenizer import count_tokens
 
 if TYPE_CHECKING:
     from kiro_gateway.auth import KiroAuthManager
@@ -209,10 +210,19 @@ async def stream_kiro_to_openai_internal(
         finish_reason = "tool_calls" if all_tool_calls else "stop"
         
         # Вычисляем total_tokens на основе context_usage_percentage
-        total_tokens = 0
+        # context_usage показывает ОБЩИЙ процент использования контекста (input + output)
+        total_tokens_from_api = 0
         if context_usage_percentage is not None:
             max_input_tokens = model_cache.get_max_input_tokens(model)
-            total_tokens = int((context_usage_percentage / 100) * max_input_tokens)
+            total_tokens_from_api = int((context_usage_percentage / 100) * max_input_tokens)
+        
+        # Подсчитываем completion_tokens (output) с помощью tiktoken
+        completion_tokens = count_tokens(full_content)
+        
+        # prompt_tokens (input) = total_tokens - completion_tokens
+        # Это логично: общее использование контекста минус токены ответа = токены запроса
+        prompt_tokens = max(0, total_tokens_from_api - completion_tokens)
+        total_tokens = total_tokens_from_api
         
         # Отправляем tool calls если есть
         if all_tool_calls:
@@ -262,14 +272,22 @@ async def stream_kiro_to_openai_internal(
             "model": model,
             "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
             "usage": {
-                "prompt_tokens": total_tokens,
-                "completion_tokens": 0,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
             }
         }
         
         if metering_data:
             final_chunk["usage"]["credits_used"] = metering_data
+        
+        # Логируем финальные значения токенов которые отправляются клиенту
+        logger.debug(
+            f"[Usage] {model}: "
+            f"prompt_tokens={prompt_tokens} (subtraction), "
+            f"completion_tokens={completion_tokens} (tiktoken), "
+            f"total_tokens={total_tokens} (API Kiro)"
+        )
         
         yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
@@ -509,6 +527,11 @@ async def collect_stream_response(
     
     finish_reason = "tool_calls" if tool_calls else "stop"
     
+    # Формируем usage для ответа
+    usage = final_usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    
+    # Логируем информацию о токенах для отладки (non-streaming использует те же логи из streaming)
+    
     return {
         "id": completion_id,
         "object": "chat.completion",
@@ -519,5 +542,5 @@ async def collect_stream_response(
             "message": message,
             "finish_reason": finish_reason
         }],
-        "usage": final_usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        "usage": usage
     }
