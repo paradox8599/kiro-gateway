@@ -269,6 +269,11 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             except (json.JSONDecodeError, KeyError):
                 pass
             
+            # Логируем access log для ошибки (до flush, чтобы попал в app_logs)
+            logger.warning(
+                f"HTTP {response.status_code} - POST /v1/chat/completions - {error_message[:100]}"
+            )
+            
             # Сбрасываем debug логи при ошибке (режим "errors")
             if debug_logger:
                 debug_logger.flush_on_error(response.status_code, error_message)
@@ -290,13 +295,10 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         messages_for_tokenizer = [msg.model_dump() for msg in request_data.messages]
         tools_for_tokenizer = [tool.model_dump() for tool in request_data.tools] if request_data.tools else None
         
-        # Успешный запрос - очищаем буферы debug логов (режим "errors")
-        if debug_logger:
-            debug_logger.discard_buffers()
-        
         if request_data.stream:
             # Streaming режим
             async def stream_wrapper():
+                streaming_error = None
                 try:
                     async for chunk in stream_kiro_to_openai(
                         http_client.client,
@@ -308,8 +310,22 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         request_tools=tools_for_tokenizer
                     ):
                         yield chunk
+                except Exception as e:
+                    streaming_error = e
+                    raise
                 finally:
                     await http_client.close()
+                    # Логируем access log для streaming (успех или ошибка)
+                    if streaming_error:
+                        logger.error(f"HTTP 500 - POST /v1/chat/completions (streaming) - {str(streaming_error)[:100]}")
+                    else:
+                        logger.info(f"HTTP 200 - POST /v1/chat/completions (streaming) - completed")
+                    # Записываем debug логи ПОСЛЕ завершения streaming
+                    if debug_logger:
+                        if streaming_error:
+                            debug_logger.flush_on_error(500, str(streaming_error))
+                        else:
+                            debug_logger.discard_buffers()
             
             return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
         
@@ -327,10 +343,20 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             )
             
             await http_client.close()
+            
+            # Логируем access log для non-streaming успеха
+            logger.info(f"HTTP 200 - POST /v1/chat/completions (non-streaming) - completed")
+            
+            # Записываем debug логи после завершения non-streaming запроса
+            if debug_logger:
+                debug_logger.discard_buffers()
+            
             return JSONResponse(content=openai_response)
     
     except HTTPException as e:
         await http_client.close()
+        # Логируем access log для HTTP ошибки
+        logger.warning(f"HTTP {e.status_code} - POST /v1/chat/completions - {e.detail}")
         # Сбрасываем debug логи при HTTP ошибке (режим "errors")
         if debug_logger:
             debug_logger.flush_on_error(e.status_code, str(e.detail))
@@ -338,6 +364,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     except Exception as e:
         await http_client.close()
         logger.error(f"Internal error: {e}", exc_info=True)
+        # Логируем access log для внутренней ошибки
+        logger.error(f"HTTP 500 - POST /v1/chat/completions - {str(e)[:100]}")
         # Сбрасываем debug логи при внутренней ошибке (режим "errors")
         if debug_logger:
             debug_logger.flush_on_error(500, str(e))

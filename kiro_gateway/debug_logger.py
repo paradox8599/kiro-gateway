@@ -26,8 +26,12 @@
 
 В режиме "errors" данные буферизуются в памяти и сбрасываются в файлы
 только при вызове flush_on_error().
+
+Также захватывает логи приложения (loguru) для каждого запроса и сохраняет
+их в файл app_logs.txt для удобства отладки.
 """
 
+import io
 import json
 import shutil
 from pathlib import Path
@@ -65,6 +69,10 @@ class DebugLogger:
         self._kiro_request_body_buffer: Optional[bytes] = None
         self._raw_chunks_buffer: bytearray = bytearray()
         self._modified_chunks_buffer: bytearray = bytearray()
+        
+        # Буфер для логов приложения (loguru)
+        self._app_logs_buffer: io.StringIO = io.StringIO()
+        self._loguru_sink_id: Optional[int] = None
     
     def _is_enabled(self) -> bool:
         """Проверяет, включено ли логирование."""
@@ -80,6 +88,42 @@ class DebugLogger:
         self._kiro_request_body_buffer = None
         self._raw_chunks_buffer.clear()
         self._modified_chunks_buffer.clear()
+        self._clear_app_logs_buffer()
+    
+    def _clear_app_logs_buffer(self):
+        """Очищает буфер логов приложения и удаляет sink."""
+        # Удаляем sink из loguru
+        if self._loguru_sink_id is not None:
+            try:
+                logger.remove(self._loguru_sink_id)
+            except ValueError:
+                # Sink уже удалён
+                pass
+            self._loguru_sink_id = None
+        
+        # Очищаем буфер
+        self._app_logs_buffer = io.StringIO()
+    
+    def _setup_app_logs_capture(self):
+        """
+        Настраивает захват логов приложения в буфер.
+        
+        Добавляет временный sink в loguru, который пишет в StringIO буфер.
+        Захватывает ВСЕ логи без фильтрации, так как sink активен только
+        на время обработки конкретного запроса.
+        """
+        # Удаляем предыдущий sink если есть
+        self._clear_app_logs_buffer()
+        
+        # Добавляем новый sink для захвата ВСЕХ логов
+        # Формат: время | уровень | модуль:функция:строка | сообщение
+        self._loguru_sink_id = logger.add(
+            self._app_logs_buffer,
+            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}",
+            level="DEBUG",  # Захватываем все уровни от DEBUG и выше
+            colorize=False,  # Без ANSI цветов в файле
+            # Без фильтра - захватываем ВСЕ логи во время обработки запроса
+        )
 
     def prepare_new_request(self):
         """
@@ -87,12 +131,16 @@ class DebugLogger:
         
         В режиме "all": очищает папку с логами.
         В режиме "errors": очищает буферы.
+        В обоих режимах: настраивает захват логов приложения.
         """
         if not self._is_enabled():
             return
         
         # Очищаем буферы в любом случае
         self._clear_buffers()
+        
+        # Настраиваем захват логов приложения
+        self._setup_app_logs_capture()
 
         if self._is_immediate_write():
             # Режим "all" - очищаем папку и создаём заново
@@ -213,9 +261,11 @@ class DebugLogger:
         if not self._is_enabled():
             return
         
-        # В режиме "all" данные уже записаны, только добавляем error_info
+        # В режиме "all" данные уже записаны, добавляем error_info и логи приложения
         if self._is_immediate_write():
             self.log_error_info(status_code, error_message)
+            self._write_app_logs_to_file()
+            self._clear_app_logs_buffer()
             return
         
         # Проверяем, есть ли что сбрасывать
@@ -253,6 +303,9 @@ class DebugLogger:
             # Сохраняем информацию об ошибке
             self.log_error_info(status_code, error_message)
             
+            # Сохраняем логи приложения
+            self._write_app_logs_to_file()
+            
             logger.info(f"[DebugLogger] Error logs flushed to {self.debug_dir} (status={status_code})")
             
         except Exception as e:
@@ -266,9 +319,14 @@ class DebugLogger:
         Очищает буферы без записи в файлы.
         
         Вызывается когда запрос завершился успешно в режиме "errors".
+        Также вызывается в режиме "all" для сохранения логов успешного запроса.
         """
         if DEBUG_MODE == "errors":
             self._clear_buffers()
+        elif DEBUG_MODE == "all":
+            # В режиме "all" сохраняем логи даже для успешных запросов
+            self._write_app_logs_to_file()
+            self._clear_app_logs_buffer()
     
     # ==================== Приватные методы записи в файлы ====================
     
@@ -316,6 +374,27 @@ class DebugLogger:
             with open(file_path, "ab") as f:
                 f.write(chunk)
         except Exception:
+            pass
+    
+    def _write_app_logs_to_file(self):
+        """Записывает захваченные логи приложения в файл."""
+        try:
+            # Получаем содержимое буфера
+            logs_content = self._app_logs_buffer.getvalue()
+            
+            if not logs_content.strip():
+                return
+            
+            # Убеждаемся что директория существует
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+            
+            file_path = self.debug_dir / "app_logs.txt"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(logs_content)
+            
+            logger.debug(f"[DebugLogger] App logs saved to {file_path}")
+        except Exception as e:
+            # Не логируем ошибку через logger чтобы избежать рекурсии
             pass
 
 

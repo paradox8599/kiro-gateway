@@ -510,3 +510,181 @@ class TestDebugLoggerJsonHandling:
             print(f"Проверяем, что данные записаны как есть...")
             content = (debug_dir / "request_body.json").read_bytes()
             assert content == invalid_data
+
+
+class TestDebugLoggerAppLogsCapture:
+    """Тесты для захвата логов приложения (app_logs.txt)."""
+    
+    def test_prepare_new_request_sets_up_log_capture(self, tmp_path):
+        """
+        Что он делает: Проверяет, что prepare_new_request настраивает захват логов.
+        Цель: Убедиться, что sink для логов создаётся.
+        """
+        print("Настройка: Режим all...")
+        debug_dir = tmp_path / "debug_logs"
+        
+        with patch('kiro_gateway.debug_logger.DEBUG_MODE', 'all'):
+            from kiro_gateway.debug_logger import DebugLogger
+            dbg_logger = DebugLogger.__new__(DebugLogger)
+            dbg_logger._initialized = False
+            dbg_logger.__init__()
+            dbg_logger.debug_dir = debug_dir
+            
+            print("Действие: Вызов prepare_new_request...")
+            dbg_logger.prepare_new_request()
+            
+            print(f"Проверяем, что sink создан...")
+            assert dbg_logger._loguru_sink_id is not None
+            
+            # Очистка
+            dbg_logger._clear_app_logs_buffer()
+    
+    def test_flush_on_error_writes_app_logs_in_mode_errors(self, tmp_path):
+        """
+        Что он делает: Проверяет, что flush_on_error записывает app_logs.txt в режиме errors.
+        Цель: Убедиться, что логи приложения сохраняются при ошибках.
+        """
+        print("Настройка: Режим errors...")
+        debug_dir = tmp_path / "debug_logs"
+        
+        with patch('kiro_gateway.debug_logger.DEBUG_MODE', 'errors'):
+            from kiro_gateway.debug_logger import DebugLogger
+            from loguru import logger as loguru_logger
+            
+            dbg_logger = DebugLogger.__new__(DebugLogger)
+            dbg_logger._initialized = False
+            dbg_logger.__init__()
+            dbg_logger.debug_dir = debug_dir
+            
+            # Настраиваем захват логов
+            dbg_logger.prepare_new_request()
+            
+            # Добавляем данные в буфер чтобы flush сработал
+            dbg_logger.log_request_body(b'{"test": "data"}')
+            
+            # Пишем тестовый лог напрямую в буфер (имитация)
+            dbg_logger._app_logs_buffer.write("Test log message\n")
+            
+            print("Действие: Вызов flush_on_error...")
+            dbg_logger.flush_on_error(500, "Test Error")
+            
+            print(f"Проверяем, что app_logs.txt создан...")
+            app_logs_file = debug_dir / "app_logs.txt"
+            assert app_logs_file.exists()
+            
+            print(f"Проверяем содержимое...")
+            content = app_logs_file.read_text()
+            assert "Test log message" in content
+    
+    def test_discard_buffers_saves_logs_in_mode_all(self, tmp_path):
+        """
+        Что он делает: Проверяет, что discard_buffers сохраняет логи в режиме all.
+        Цель: Убедиться, что даже успешные запросы сохраняют логи в режиме all.
+        """
+        print("Настройка: Режим all...")
+        debug_dir = tmp_path / "debug_logs"
+        debug_dir.mkdir()
+        
+        with patch('kiro_gateway.debug_logger.DEBUG_MODE', 'all'):
+            from kiro_gateway.debug_logger import DebugLogger
+            
+            dbg_logger = DebugLogger.__new__(DebugLogger)
+            dbg_logger._initialized = False
+            dbg_logger.__init__()
+            dbg_logger.debug_dir = debug_dir
+            
+            # Настраиваем захват логов
+            dbg_logger.prepare_new_request()
+            
+            # Пишем тестовый лог напрямую в буфер
+            dbg_logger._app_logs_buffer.write("Success log message\n")
+            
+            print("Действие: Вызов discard_buffers...")
+            dbg_logger.discard_buffers()
+            
+            print(f"Проверяем, что app_logs.txt создан...")
+            app_logs_file = debug_dir / "app_logs.txt"
+            assert app_logs_file.exists()
+            
+            print(f"Проверяем содержимое...")
+            content = app_logs_file.read_text()
+            assert "Success log message" in content
+    
+    def test_discard_buffers_does_not_save_logs_in_mode_errors(self, tmp_path):
+        """
+        Что он делает: Проверяет, что discard_buffers НЕ сохраняет логи в режиме errors.
+        Цель: Убедиться, что успешные запросы не оставляют логов в режиме errors.
+        """
+        print("Настройка: Режим errors...")
+        debug_dir = tmp_path / "debug_logs"
+        
+        with patch('kiro_gateway.debug_logger.DEBUG_MODE', 'errors'):
+            from kiro_gateway.debug_logger import DebugLogger
+            
+            dbg_logger = DebugLogger.__new__(DebugLogger)
+            dbg_logger._initialized = False
+            dbg_logger.__init__()
+            dbg_logger.debug_dir = debug_dir
+            
+            # Настраиваем захват логов
+            dbg_logger.prepare_new_request()
+            
+            # Пишем тестовый лог напрямую в буфер
+            dbg_logger._app_logs_buffer.write("Should not be saved\n")
+            
+            print("Действие: Вызов discard_buffers...")
+            dbg_logger.discard_buffers()
+            
+            print(f"Проверяем, что директория НЕ создана...")
+            assert not debug_dir.exists()
+    
+    def test_clear_app_logs_buffer_removes_sink(self, tmp_path):
+        """
+        Что он делает: Проверяет, что _clear_app_logs_buffer удаляет sink.
+        Цель: Убедиться, что sink корректно удаляется.
+        """
+        print("Настройка: Режим all...")
+        with patch('kiro_gateway.debug_logger.DEBUG_MODE', 'all'):
+            from kiro_gateway.debug_logger import DebugLogger
+            
+            dbg_logger = DebugLogger.__new__(DebugLogger)
+            dbg_logger._initialized = False
+            dbg_logger.__init__()
+            dbg_logger.debug_dir = tmp_path / "debug_logs"
+            
+            # Настраиваем захват логов
+            dbg_logger.prepare_new_request()
+            sink_id = dbg_logger._loguru_sink_id
+            assert sink_id is not None
+            
+            print("Действие: Вызов _clear_app_logs_buffer...")
+            dbg_logger._clear_app_logs_buffer()
+            
+            print(f"Проверяем, что sink_id сброшен...")
+            assert dbg_logger._loguru_sink_id is None
+    
+    def test_app_logs_not_saved_when_empty(self, tmp_path):
+        """
+        Что он делает: Проверяет, что пустые логи не создают файл.
+        Цель: Убедиться, что app_logs.txt не создаётся если логов нет.
+        """
+        print("Настройка: Режим all...")
+        debug_dir = tmp_path / "debug_logs"
+        debug_dir.mkdir()
+        
+        with patch('kiro_gateway.debug_logger.DEBUG_MODE', 'all'):
+            from kiro_gateway.debug_logger import DebugLogger
+            
+            dbg_logger = DebugLogger.__new__(DebugLogger)
+            dbg_logger._initialized = False
+            dbg_logger.__init__()
+            dbg_logger.debug_dir = debug_dir
+            
+            # НЕ пишем ничего в буфер
+            
+            print("Действие: Вызов _write_app_logs_to_file...")
+            dbg_logger._write_app_logs_to_file()
+            
+            print(f"Проверяем, что app_logs.txt НЕ создан...")
+            app_logs_file = debug_dir / "app_logs.txt"
+            assert not app_logs_file.exists()

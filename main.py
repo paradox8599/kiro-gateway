@@ -27,6 +27,7 @@ Usage:
     python main.py
 """
 
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -61,6 +62,58 @@ logger.add(
     colorize=True,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
+
+
+class InterceptHandler(logging.Handler):
+    """
+    Перехватывает логи из стандартного logging и перенаправляет в loguru.
+    
+    Это позволяет захватывать логи uvicorn, FastAPI и других библиотек,
+    которые используют стандартный logging вместо loguru.
+    """
+    
+    def emit(self, record: logging.LogRecord) -> None:
+        # Получаем соответствующий уровень loguru
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        
+        # Находим вызывающий фрейм для корректного отображения источника
+        frame, depth = logging.currentframe(), 2
+        while frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
+def setup_logging_intercept():
+    """
+    Настраивает перехват логов из стандартного logging в loguru.
+    
+    Перехватывает логи от:
+    - uvicorn (access logs, error logs)
+    - uvicorn.error
+    - uvicorn.access
+    - fastapi
+    """
+    # Список логгеров для перехвата
+    loggers_to_intercept = [
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "fastapi",
+    ]
+    
+    for logger_name in loggers_to_intercept:
+        logging_logger = logging.getLogger(logger_name)
+        logging_logger.handlers = [InterceptHandler()]
+        logging_logger.propagate = False
+
+
+# Настраиваем перехват логов uvicorn/fastapi
+setup_logging_intercept()
 
 
 # --- Configuration Validation ---
@@ -199,8 +252,33 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.include_router(router)
 
 
+# --- Uvicorn log config ---
+# Минимальная конфигурация для перенаправления логов uvicorn в loguru.
+# Использует InterceptHandler, который перехватывает логи и передаёт их в loguru.
+UVICORN_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "default": {
+            "class": "main.InterceptHandler",
+        },
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.access": {"handlers": ["default"], "level": "INFO", "propagate": False},
+    },
+}
+
+
 # --- Точка входа ---
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Uvicorn server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_config=UVICORN_LOG_CONFIG,
+    )
