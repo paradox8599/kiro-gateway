@@ -65,20 +65,20 @@ pytest --cov=kiro --cov-report=html
 ### Dependencies
 
 ```bash
-# Install all dependencies
-pip install -r requirements.txt
+# Install dependencies
+uv sync
 
-# Main dependencies:
-# - fastapi
-# - uvicorn[standard]
-# - httpx
-# - loguru
-# - requests
-# - python-dotenv
-# - tiktoken
-# - pytest
-# - pytest-asyncio
-# - hypothesis
+# Run server
+uv run python main.py
+
+# Run tests
+uv run pytest -v
+
+# Add dependency
+uv add <package>
+
+# Add dev dependency
+uv add --dev <package>
 ```
 
 ### Docker (Containerization)
@@ -154,9 +154,11 @@ kiro-gateway/
 │   ├── __init__.py                  # Package exports
 │   ├── config.py                    # Configuration and constants
 │   ├── auth.py                      # Authentication manager
+│   ├── account_manager.py           # Multi-account management
 │   ├── cache.py                     # Model metadata cache
 │   ├── model_resolver.py            # Dynamic model resolution
 │   ├── http_client.py               # HTTP client with retry logic
+│   ├── routes_accounts.py           # Account management API endpoints
 │   ├── routes_openai.py             # OpenAI API endpoints
 │   ├── routes_anthropic.py          # Anthropic API endpoints
 │   ├── converters_core.py           # Shared conversion logic
@@ -210,6 +212,22 @@ The codebase follows a layered architecture:
 - Auto-detects auth type based on credentials
 - Thread-safe token refresh with asyncio.Lock
 - Automatic refresh before expiration
+
+> **Note:** For multi-account setups, use `AccountManager` instead of `KiroAuthManager`.
+> AccountManager wraps multiple accounts and provides load balancing.
+
+#### Multi-Account Management (`account_manager.py`)
+
+- **AccountManager**: Manages multiple Kiro accounts with load balancing
+- Features:
+  - Round-robin account selection via `get_next_account()`
+  - Token refresh with `get_valid_token(index)`
+  - Failure tracking with auto-disable after 5 failures
+  - Methods: `mark_success()`, `mark_failure()`, `handle_rate_limit()`, `force_refresh()`
+- Error handling:
+  - 429: Rotate to next account (rate limit)
+  - 402: Disable account, rotate (payment required)
+  - 403: Force refresh token, retry same account
 
 #### Model Resolution (`model_resolver.py`)
 

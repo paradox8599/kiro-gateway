@@ -79,15 +79,18 @@ cd kiro-gateway
 
 # Or download ZIP: Code → Download ZIP → extract → open kiro-gateway folder
 
+# Install uv (if not installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Install dependencies
-pip install -r requirements.txt
+uv sync
 
 # Configure (see Configuration section)
 cp .env.example .env
 # Copy and edit .env with your credentials
 
-# Start the server
-python main.py
+# Run server
+uv run python main.py
 
 # Or with custom port (if 8000 is busy)
 python main.py --port 9000
@@ -309,6 +312,57 @@ When the server starts, credentials are checked in this order:
 
 The first valid credential source found is used.
 
+### Multi-Account Support
+
+Manage multiple Kiro accounts with automatic load balancing.
+
+#### Adding Accounts
+
+```bash
+# Add account by email (will prompt for login if needed)
+python main.py login --email user1@example.com
+python main.py login --email user2@example.com
+```
+
+#### Managing Accounts
+
+```bash
+# List all accounts
+python main.py accounts list
+
+# Disable an account (by index)
+python main.py accounts disable 0
+
+# Enable an account
+python main.py accounts enable 0
+
+# Remove an account
+python main.py accounts remove 0
+```
+
+#### API Endpoints
+
+```bash
+# List accounts
+curl -H "Authorization: Bearer YOUR_KEY" http://localhost:8000/accounts
+
+# Disable account
+curl -X POST http://localhost:8000/accounts/0/disable -H "Authorization: Bearer YOUR_KEY"
+
+# Enable account
+curl -X POST http://localhost:8000/accounts/0/enable -H "Authorization: Bearer YOUR_KEY"
+
+# Remove account
+curl -X DELETE http://localhost:8000/accounts/0 -H "Authorization: Bearer YOUR_KEY"
+```
+
+#### How It Works
+
+- **Round-robin**: Requests are distributed across enabled accounts
+- **Auto-failover**: Failed accounts are automatically skipped
+- **Rate limit handling**: 429 errors trigger rotation to next account
+- **Token refresh**: Tokens are refreshed automatically before expiration
+
 ### Checking Usage
 
 Check your Kiro account credit usage and limits.
@@ -328,11 +382,17 @@ python main.py usage --region eu-west-1
 
 **Example output:**
 ```
-Kiro Usage - Amazon Q Developer Free Tier (FREE_TIER)
-Email: user@example.com | Resets: 2025-02-13 (15 days)
+Kiro Usage Summary
+==================
+Account 0: user1@example.com (ENABLED)
+  Amazon Q Developer Free Tier (FREE_TIER)
+  Resets: 2025-02-13 (15 days)
+    Agentic coding          5 / 10     (50.0%)
 
-  Agentic coding          5 / 10     (50.0%)
-  Code suggestions      100 / 1000   (10.0%)
+Account 1: user2@example.com (ENABLED)
+  Amazon Q Developer Free Tier (FREE_TIER)
+  Resets: 2025-02-15 (17 days)
+    Agentic coding          2 / 10     (20.0%)
 ```
 
 #### API
