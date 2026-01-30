@@ -193,7 +193,11 @@ async def stream_kiro_to_anthropic(
             },
         )
 
-        async for event in parse_kiro_stream(response, first_token_timeout):
+        async for event in parse_kiro_stream(
+            response,
+            first_token_timeout,
+            enable_thinking_parser=thinking_enabled or False,
+        ):
             if event.type == "content":
                 content = event.content or ""
                 full_content += content
