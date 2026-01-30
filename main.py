@@ -344,12 +344,17 @@ async def lifespan(app: FastAPI):
     logger.info("Shared HTTP client created with connection pooling")
 
     # Create AuthManager
-    # Priority: SQLite DB > JSON file > environment variables
+    # Priority: OAuth creds (~/.kiro-gateway/) > SQLite DB > JSON file > environment variables
+    oauth_creds_file = None
+    if gateway_credentials_exist():
+        oauth_creds_file = str(get_gateway_credentials_path())
+        logger.info(f"Using OAuth credentials from {oauth_creds_file}")
+
     app.state.auth_manager = KiroAuthManager(
         refresh_token=REFRESH_TOKEN,
         profile_arn=PROFILE_ARN,
         region=REGION,
-        creds_file=KIRO_CREDS_FILE if KIRO_CREDS_FILE else None,
+        creds_file=oauth_creds_file or (KIRO_CREDS_FILE if KIRO_CREDS_FILE else None),
         sqlite_db=KIRO_CLI_DB_FILE if KIRO_CLI_DB_FILE else None,
     )
 
