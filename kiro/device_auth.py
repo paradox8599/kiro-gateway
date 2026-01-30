@@ -91,15 +91,17 @@ class DeviceAuthFlow:
     # Default polling timeout in seconds (5 minutes)
     DEFAULT_POLL_TIMEOUT = 300
 
-    def __init__(self, region: str = "us-east-1"):
+    def __init__(self, region: str = "us-east-1", start_url: str | None = None):
         """
-        Initialize DeviceAuthFlow with AWS region.
+        Initialize DeviceAuthFlow with AWS region and optional start URL.
 
         Args:
             region: AWS region for OIDC endpoint (e.g., 'us-east-1')
+            start_url: SSO start URL for organization (default: Builder ID)
         """
         self._region = region
         self._base_url = f"https://oidc.{region}.amazonaws.com"
+        self._start_url = start_url or self.DEFAULT_START_URL
 
     async def register_client(self) -> Dict[str, str]:
         """
@@ -198,7 +200,7 @@ class DeviceAuthFlow:
         payload = {
             "clientId": client_id,
             "clientSecret": client_secret,
-            "startUrl": self.DEFAULT_START_URL,
+            "startUrl": self._start_url,
         }
 
         headers = {

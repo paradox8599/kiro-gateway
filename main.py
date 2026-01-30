@@ -569,6 +569,12 @@ Examples:
     login_parser.add_argument(
         "--region", type=str, default=None, help=f"AWS region (default: {REGION})"
     )
+    login_parser.add_argument(
+        "--start-url",
+        type=str,
+        default=None,
+        help="SSO start URL for organization (default: Builder ID)",
+    )
 
     return parser.parse_args()
 
@@ -662,11 +668,14 @@ async def handle_login_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     region = args.region or REGION or "us-east-1"
+    start_url = args.start_url if hasattr(args, "start_url") else None
 
     print(f"\nStarting Builder ID authentication (region: {region})...")
+    if start_url:
+        print(f"Using organization SSO: {start_url}")
 
     try:
-        flow = DeviceAuthFlow(region)
+        flow = DeviceAuthFlow(region, start_url=start_url)
         credentials = await flow.run_device_flow()
 
         save_gateway_credentials(credentials)
