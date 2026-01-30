@@ -230,6 +230,7 @@ def validate_configuration() -> None:
     has_refresh_token = bool(REFRESH_TOKEN)
     has_creds_file = bool(KIRO_CREDS_FILE)
     has_cli_db = bool(KIRO_CLI_DB_FILE)
+    has_oauth_creds = gateway_credentials_exist()
 
     # Check if creds file actually exists
     if KIRO_CREDS_FILE:
@@ -246,7 +247,12 @@ def validate_configuration() -> None:
             logger.warning(f"KIRO_CLI_DB_FILE not found: {KIRO_CLI_DB_FILE}")
 
     # If no credentials found, show helpful error
-    if not has_refresh_token and not has_creds_file and not has_cli_db:
+    if (
+        not has_refresh_token
+        and not has_creds_file
+        and not has_cli_db
+        and not has_oauth_creds
+    ):
         if not env_file.exists():
             # No .env file and no environment variables
             errors.append(
@@ -259,6 +265,7 @@ def validate_configuration() -> None:
                 "2. Edit .env and configure your credentials:\n"
                 "   2.1. Set you super-secret password as PROXY_API_KEY\n"
                 "   2.2. Set your Kiro credentials:\n"
+                "      - Option 0 (Easiest): Run 'python main.py login' to authenticate\n"
                 "      - Option 1: KIRO_CREDS_FILE to your Kiro credentials JSON file\n"
                 "      - Option 2: REFRESH_TOKEN from Kiro IDE traffic\n"
                 "      - Option 3: KIRO_CLI_DB_FILE to kiro-cli SQLite database\n"
@@ -277,6 +284,8 @@ def validate_configuration() -> None:
                 "\n"
                 "Set you super-secret password as PROXY_API_KEY\n"
                 '   PROXY_API_KEY="my-super-secret-password-123"\n'
+                "\n"
+                "   Option 0 (Easiest): Run 'python main.py login' to authenticate\n"
                 "\n"
                 "   Option 1 (Recommended): JSON credentials file\n"
                 '      KIRO_CREDS_FILE="path/to/your/kiro-credentials.json"\n'
