@@ -92,6 +92,7 @@ from kiro.model_resolver import ModelResolver
 from kiro.routes_openai import router as openai_router
 from kiro.routes_anthropic import router as anthropic_router
 from kiro.routes_auth import router as auth_router
+from kiro.routes_accounts import router as accounts_router
 from kiro.exceptions import validation_exception_handler
 from kiro.debug_middleware import DebugLoggerMiddleware
 from kiro.device_auth import DeviceAuthFlow, DeviceAuthError
@@ -508,6 +509,8 @@ app.include_router(openai_router)
 app.include_router(anthropic_router)
 
 app.include_router(auth_router)
+
+app.include_router(accounts_router)
 
 
 # --- Uvicorn log config ---
