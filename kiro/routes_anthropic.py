@@ -41,7 +41,7 @@ from kiro.models_anthropic import (
     AnthropicErrorResponse,
     AnthropicErrorDetail,
 )
-from kiro.auth import KiroAuthManager, AuthType
+
 from kiro.cache import ModelInfoCache
 from kiro.converters_anthropic import anthropic_to_kiro
 from kiro.streaming_anthropic import (
@@ -160,7 +160,6 @@ async def messages(
         raise HTTPException(status_code=503, detail="No enabled accounts available")
     account_idx, account = result
 
-    auth_manager: KiroAuthManager = request.app.state.auth_manager
     model_cache: ModelInfoCache = request.app.state.model_cache
 
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
@@ -280,10 +279,9 @@ async def messages(
     conversation_id = generate_conversation_id()
 
     # Build payload for Kiro
-    # profileArn is only needed for Kiro Desktop auth
+    # For multi-account, we don't use profile_arn (it's only for legacy Kiro Desktop single-account)
+    # The account dict from AccountManager doesn't have auth_type, so we skip profile_arn
     profile_arn_for_payload = ""
-    if auth_manager.auth_type == AuthType.KIRO_DESKTOP and auth_manager.profile_arn:
-        profile_arn_for_payload = auth_manager.profile_arn
 
     try:
         token = await account_manager.get_valid_token(account_idx)
@@ -327,7 +325,7 @@ async def messages(
     # Create HTTP client with retry logic
     # For streaming: use per-request client to avoid CLOSE_WAIT leak on VPN disconnect (issue #54)
     # For non-streaming: use shared client for connection pooling
-    url = f"{auth_manager.api_host}/generateAssistantResponse"
+    url = f"{account['api_host']}/generateAssistantResponse"
     logger.debug(f"Kiro API URL: {url}")
 
     max_account_retries = len(account_manager.get_enabled_accounts())
@@ -336,10 +334,10 @@ async def messages(
 
     for retry_attempt in range(max_account_retries):
         if request_data.stream:
-            http_client = KiroHttpClient(auth_manager, shared_client=None)
+            http_client = KiroHttpClient(account, shared_client=None)
         else:
             shared_client = request.app.state.http_client
-            http_client = KiroHttpClient(auth_manager, shared_client=shared_client)
+            http_client = KiroHttpClient(account, shared_client=shared_client)
 
         try:
             response = await http_client.request_with_retry(
@@ -491,7 +489,7 @@ async def messages(
                         response,
                         request_data.model,
                         model_cache,
-                        auth_manager,
+                        account,
                         request_messages=messages_for_tokenizer,
                         request_system=system_for_tokenizer,
                         request_tools=tools_for_tokenizer,
@@ -553,7 +551,7 @@ async def messages(
                 response,
                 request_data.model,
                 model_cache,
-                auth_manager,
+                account,
                 request_messages=messages_for_tokenizer,
             )
 
