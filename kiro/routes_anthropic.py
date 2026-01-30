@@ -407,6 +407,25 @@ async def messages(
                 account_idx, account = next_result
                 continue
 
+            if response.status_code == 403:
+                logger.warning(
+                    f"Account {account_idx} token expired (403), refreshing..."
+                )
+                await http_client.aclose()
+                try:
+                    token = await account_manager.force_refresh(account_idx)
+                    continue
+                except Exception as e:
+                    logger.error(f"Token refresh failed for account {account_idx}: {e}")
+                    account_manager.mark_failure(account_idx)
+                    next_result = account_manager.get_next_account()
+                    if next_result is None:
+                        raise HTTPException(
+                            status_code=503, detail="No enabled accounts available"
+                        )
+                    account_idx, account = next_result
+                    continue
+
             account_manager.mark_failure(account_idx)
             break
 

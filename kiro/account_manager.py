@@ -161,6 +161,34 @@ class AccountManager:
 
             return self._accounts[index].get("accessToken", "")
 
+    async def force_refresh(self, index: int) -> str:
+        """
+        Force token refresh for account, bypassing expiry check.
+
+        Used when receiving a 403 error from the API indicating token is invalid.
+
+        Thread-safe method using asyncio.Lock.
+
+        Args:
+            index: Index of account in credentials list
+
+        Returns:
+            New access token
+
+        Raises:
+            IndexError: If index is out of range
+            ValueError: If token refresh fails
+        """
+        if index < 0 or index >= len(self._accounts):
+            raise IndexError(f"Account index {index} out of range")
+
+        async with self._lock:
+            logger.info(
+                f"Force refreshing token for account {index}: {self._accounts[index].get('email', 'unknown')}"
+            )
+            await self._refresh_token(index)
+            return self._accounts[index].get("accessToken", "")
+
     def mark_success(self, index: int) -> None:
         """
         Mark successful request for account, resetting failure count.
