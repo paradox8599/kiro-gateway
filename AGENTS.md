@@ -1,6 +1,10 @@
 # AGENTS.md - Guide for AI Agents Working in Kiro Gateway
 
+**Generated:** 2026-01-31 | **Commit:** e440ec1 | **Branch:** main
+
 This document provides essential information for AI agents (Claude, GPT, etc.) working in the Kiro Gateway codebase.
+
+> **Subdirectory guides:** [`kiro/AGENTS.md`](kiro/AGENTS.md) (package internals) | [`tests/AGENTS.md`](tests/AGENTS.md) (testing patterns)
 
 ## Project Overview
 
