@@ -819,29 +819,21 @@ async def handle_login_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def handle_usage_command(args: argparse.Namespace) -> None:
+async def fetch_usage_data(token: str, region: str) -> dict:
+    """
+    Fetch usage data from Kiro API.
+
+    Args:
+        token: Valid access token
+        region: AWS region
+
+    Returns:
+        Usage data dict from API
+
+    Raises:
+        httpx.HTTPStatusError: If API call fails
+    """
     import uuid
-
-    creds_file = None
-    if gateway_credentials_exist():
-        creds_file = str(get_gateway_credentials_path())
-    elif KIRO_CREDS_FILE:
-        creds_file = KIRO_CREDS_FILE
-
-    if not creds_file and not REFRESH_TOKEN and not KIRO_CLI_DB_FILE:
-        logger.error("No credentials found. Run 'python main.py login' first.")
-        sys.exit(1)
-
-    auth_manager = KiroAuthManager(
-        refresh_token=REFRESH_TOKEN,
-        profile_arn=PROFILE_ARN,
-        region=args.region or REGION or "us-east-1",
-        creds_file=creds_file,
-        sqlite_db=KIRO_CLI_DB_FILE if KIRO_CLI_DB_FILE else None,
-    )
-
-    token = await auth_manager.get_access_token()
-    region = args.region or REGION or "us-east-1"
 
     url = f"https://q.{region}.amazonaws.com/getUsageLimits"
     params = {
@@ -849,8 +841,6 @@ async def handle_usage_command(args: argparse.Namespace) -> None:
         "origin": "AI_EDITOR",
         "resourceType": "AGENTIC_REQUEST",
     }
-    if PROFILE_ARN:
-        params["profileArn"] = PROFILE_ARN
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -862,37 +852,90 @@ async def handle_usage_command(args: argparse.Namespace) -> None:
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(url, params=params, headers=headers)
         response.raise_for_status()
-        data = response.json()
+        return response.json()
+
+
+async def handle_usage_command(args: argparse.Namespace) -> None:
+    credentials = load_gateway_credentials()
+
+    if not credentials:
+        logger.error("No credentials found. Run 'python main.py login' first.")
+        sys.exit(1)
+
+    region = args.region or REGION or "us-east-1"
+    account_manager = AccountManager(credentials, region=region)
 
     if args.json:
-        print(json.dumps(data, indent=2))
+        results = []
+        for idx, account in enumerate(credentials):
+            try:
+                token = await account_manager.get_valid_token(idx)
+                usage_data = await fetch_usage_data(token, region)
+                results.append(
+                    {
+                        "index": idx,
+                        "email": account.get("email", "unknown"),
+                        "enabled": account.get("enabled", True),
+                        "failure_count": account.get("failureCount", 0),
+                        "usage": usage_data,
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch usage for account {idx}: {e}")
+                results.append(
+                    {
+                        "index": idx,
+                        "email": account.get("email", "unknown"),
+                        "enabled": account.get("enabled", True),
+                        "failure_count": account.get("failureCount", 0),
+                        "error": str(e),
+                    }
+                )
+        print(json.dumps({"accounts": results}, indent=2))
     else:
-        sub_info = data.get("subscriptionInfo", {})
-        user_info = data.get("userInfo", {})
+        print(f"\nKiro Usage - {len(credentials)} account(s)\n")
 
-        sub_title = sub_info.get("subscriptionTitle", "Unknown")
-        sub_type = sub_info.get("type", "Unknown")
-        print(f"\nKiro Usage - {sub_title} ({sub_type})")
+        for idx, account in enumerate(credentials):
+            email = account.get("email", "unknown")
+            enabled = account.get("enabled", True)
+            failures = account.get("failureCount", 0)
+            status = "enabled" if enabled else "disabled"
 
-        email = user_info.get("email", "N/A")
-        reset_ts = data.get("nextDateReset", 0)
-        if reset_ts:
-            reset_date = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d")
-            days = data.get("daysUntilReset", 0)
-            print(f"Email: {email} | Resets: {reset_date} ({days} days)")
-        else:
-            print(f"Email: {email}")
+            print(f"[{idx}] {email} ({status}, {failures} failures)")
 
-        print()
+            try:
+                token = await account_manager.get_valid_token(idx)
+                data = await fetch_usage_data(token, region)
 
-        for item in data.get("usageBreakdownList", []):
-            name = item.get("displayName", item.get("resourceType", "Unknown"))
-            current = item.get("currentUsage", 0)
-            limit = item.get("usageLimit", 0)
-            pct = (current / limit * 100) if limit > 0 else 0
-            print(f"  {name:<24} {current:>4} / {limit:<6} ({pct:>5.1f}%)")
+                sub_info = data.get("subscriptionInfo", {})
+                sub_title = sub_info.get("subscriptionTitle", "Unknown")
+                sub_type = sub_info.get("type", "Unknown")
+                print(f"    {sub_title} ({sub_type})")
 
-        print()
+                reset_ts = data.get("nextDateReset", 0)
+                if reset_ts:
+                    reset_date = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d")
+                    days = data.get("daysUntilReset", 0)
+                    print(f"    Resets: {reset_date} ({days} days)")
+
+                for item in data.get("usageBreakdownList", []):
+                    name = item.get("displayName", item.get("resourceType", "Unknown"))
+                    current = item.get("currentUsage", 0)
+                    limit = item.get("usageLimit", 0)
+                    pct = (current / limit * 100) if limit > 0 else 0
+
+                    limit_marker = (
+                        "  ← LIMIT REACHED" if current >= limit and limit > 0 else ""
+                    )
+                    print(
+                        f"      {name:<24} {current:>4} / {limit:<6} ({pct:>5.1f}%){limit_marker}"
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to fetch usage for account {idx}: {e}")
+                print(f"    Error: {e}")
+
+            print()
 
 
 def handle_accounts_command(args: argparse.Namespace) -> None:

@@ -93,6 +93,19 @@ class UsageResponse(BaseModel):
     usage_breakdown: List[UsageBreakdown]
 
 
+class AccountUsageResponse(BaseModel):
+    index: int
+    email: str
+    enabled: bool
+    failure_count: int
+    usage: Optional[UsageResponse] = None
+    error: Optional[str] = None
+
+
+class MultiAccountUsageResponse(BaseModel):
+    accounts: List[AccountUsageResponse]
+
+
 # --- Security scheme ---
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
@@ -559,74 +572,99 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
 
 
 @router.get(
-    "/usage", response_model=UsageResponse, dependencies=[Depends(verify_api_key)]
+    "/usage",
+    response_model=MultiAccountUsageResponse,
+    dependencies=[Depends(verify_api_key)],
 )
 async def get_usage(request: Request):
     logger.info("Request to /usage")
 
-    auth_manager: KiroAuthManager = request.app.state.auth_manager
-    token = await auth_manager.get_access_token()
-
-    region = auth_manager._region or "us-east-1"
-    profile_arn = auth_manager._profile_arn
-
-    url = f"https://q.{region}.amazonaws.com/getUsageLimits"
-    params = {
-        "isEmailRequired": "true",
-        "origin": "AI_EDITOR",
-        "resourceType": "AGENTIC_REQUEST",
-    }
-    if profile_arn:
-        params["profileArn"] = profile_arn
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "x-amz-user-agent": "kiro-gateway",
-        "user-agent": "kiro-gateway/1.0",
-        "amz-sdk-invocation-id": str(uuid.uuid4()),
-        "amz-sdk-request": "attempt=1;max=1",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Usage API error: {e.response.status_code} - {e.response.text}")
+    account_manager: AccountManager = request.app.state.account_manager
+    if not account_manager:
         raise HTTPException(
-            status_code=e.response.status_code,
-            detail=f"Kiro API error: {e.response.text}",
-        )
-    except httpx.RequestError as e:
-        logger.error(f"Usage API request error: {e}")
-        raise HTTPException(
-            status_code=502, detail=f"Failed to connect to Kiro API: {str(e)}"
+            status_code=503,
+            detail="No accounts configured. Run 'python main.py login' first.",
         )
 
-    return UsageResponse(
-        days_until_reset=data.get("daysUntilReset", 0),
-        next_date_reset=data.get("nextDateReset", 0),
-        subscription_info=SubscriptionInfo(
-            subscription_title=data.get("subscriptionInfo", {}).get(
-                "subscriptionTitle", "Unknown"
-            ),
-            type=data.get("subscriptionInfo", {}).get("type", "Unknown"),
-        ),
-        user_info=UserInfo(
-            email=data.get("userInfo", {}).get("email"),
-            user_id=data.get("userInfo", {}).get("userId"),
-        )
-        if data.get("userInfo")
-        else None,
-        usage_breakdown=[
-            UsageBreakdown(
-                resource_type=item.get("resourceType", ""),
-                display_name=item.get("displayName", ""),
-                current_usage=item.get("currentUsage", 0),
-                usage_limit=item.get("usageLimit", 0),
-                next_date_reset=item.get("nextDateReset"),
+    all_accounts = account_manager.get_all_accounts()
+    results = []
+
+    for idx, account_info in enumerate(all_accounts):
+        email = account_info.get("email", "unknown")
+        enabled = account_info.get("enabled", True)
+        failure_count = account_info.get("failureCount", 0)
+
+        try:
+            token = await account_manager.get_valid_token(idx)
+            region = account_info.get("region", "us-east-1")
+
+            url = f"https://q.{region}.amazonaws.com/getUsageLimits"
+            params = {
+                "isEmailRequired": "true",
+                "origin": "AI_EDITOR",
+                "resourceType": "AGENTIC_REQUEST",
+            }
+
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "x-amz-user-agent": "kiro-gateway",
+                "user-agent": "kiro-gateway/1.0",
+                "amz-sdk-invocation-id": str(uuid.uuid4()),
+                "amz-sdk-request": "attempt=1;max=1",
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+            usage_response = UsageResponse(
+                days_until_reset=data.get("daysUntilReset", 0),
+                next_date_reset=data.get("nextDateReset", 0),
+                subscription_info=SubscriptionInfo(
+                    subscription_title=data.get("subscriptionInfo", {}).get(
+                        "subscriptionTitle", "Unknown"
+                    ),
+                    type=data.get("subscriptionInfo", {}).get("type", "Unknown"),
+                ),
+                user_info=UserInfo(
+                    email=data.get("userInfo", {}).get("email"),
+                    user_id=data.get("userInfo", {}).get("userId"),
+                )
+                if data.get("userInfo")
+                else None,
+                usage_breakdown=[
+                    UsageBreakdown(
+                        resource_type=item.get("resourceType", ""),
+                        display_name=item.get("displayName", ""),
+                        current_usage=item.get("currentUsage", 0),
+                        usage_limit=item.get("usageLimit", 0),
+                        next_date_reset=item.get("nextDateReset"),
+                    )
+                    for item in data.get("usageBreakdownList", [])
+                ],
             )
-            for item in data.get("usageBreakdownList", [])
-        ],
-    )
+
+            results.append(
+                AccountUsageResponse(
+                    index=idx,
+                    email=email,
+                    enabled=enabled,
+                    failure_count=failure_count,
+                    usage=usage_response,
+                )
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch usage for account {idx} ({email}): {e}")
+            results.append(
+                AccountUsageResponse(
+                    index=idx,
+                    email=email,
+                    enabled=enabled,
+                    failure_count=failure_count,
+                    error=str(e),
+                )
+            )
+
+    return MultiAccountUsageResponse(accounts=results)
