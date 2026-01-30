@@ -48,6 +48,7 @@ from kiro.models_openai import (
     ChatCompletionRequest,
 )
 from kiro.auth import KiroAuthManager, AuthType
+from kiro.account_manager import AccountManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
 from kiro.converters_openai import build_kiro_payload
@@ -208,6 +209,18 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         f"Request to /v1/chat/completions (model={request_data.model}, stream={request_data.stream})"
     )
 
+    account_manager: AccountManager = request.app.state.account_manager
+    if not account_manager:
+        raise HTTPException(
+            status_code=503,
+            detail="No accounts configured. Run 'python main.py login' first.",
+        )
+
+    result = account_manager.get_next_account()
+    if result is None:
+        raise HTTPException(status_code=503, detail="No enabled accounts available")
+    account_idx, account = result
+
     auth_manager: KiroAuthManager = request.app.state.auth_manager
     model_cache: ModelInfoCache = request.app.state.model_cache
 
@@ -301,28 +314,92 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     except Exception as e:
         logger.warning(f"Failed to log Kiro request: {e}")
 
-    # Create HTTP client with retry logic
-    # For streaming: use per-request client to avoid CLOSE_WAIT leak on VPN disconnect (issue #54)
-    # For non-streaming: use shared client for connection pooling
     url = f"{auth_manager.api_host}/generateAssistantResponse"
     logger.debug(f"Kiro API URL: {url}")
 
-    if request_data.stream:
-        # Streaming mode: per-request client prevents orphaned connections
-        # when network interface changes (VPN disconnect/reconnect)
-        http_client = KiroHttpClient(auth_manager, shared_client=None)
+    max_account_retries = len(account_manager.get_enabled_accounts())
+    http_client = None
+    response = None
+
+    for retry_attempt in range(max_account_retries):
+        try:
+            token = await account_manager.get_valid_token(account_idx)
+        except (IndexError, ValueError) as e:
+            logger.error(f"Failed to get token for account {account_idx}: {e}")
+            account_manager.mark_failure(account_idx)
+            next_result = account_manager.get_next_account()
+            if next_result is None:
+                raise HTTPException(
+                    status_code=503, detail="No enabled accounts available"
+                )
+            account_idx, account = next_result
+            continue
+
+        if request_data.stream:
+            http_client = KiroHttpClient(auth_manager, shared_client=None)
+        else:
+            shared_client = request.app.state.http_client
+            http_client = KiroHttpClient(auth_manager, shared_client=shared_client)
+
+        try:
+            response = await http_client.request_with_retry(
+                "POST", url, kiro_payload, stream=True
+            )
+
+            if response.status_code == 200:
+                account_manager.mark_success(account_idx)
+                break
+
+            if response.status_code == 429:
+                logger.warning(f"Account {account_idx} rate limited (429)")
+                await http_client.close()
+                next_result = account_manager.handle_rate_limit(account_idx)
+                if next_result is None:
+                    raise HTTPException(
+                        status_code=429, detail="All accounts rate limited"
+                    )
+                account_idx, account = next_result
+                continue
+
+            if response.status_code == 402:
+                logger.warning(f"Account {account_idx} payment required (402)")
+                await http_client.close()
+                next_result = account_manager.handle_payment_required(account_idx)
+                if next_result is None:
+                    raise HTTPException(
+                        status_code=402, detail="All accounts have payment issues"
+                    )
+                account_idx, account = next_result
+                continue
+
+            account_manager.mark_failure(account_idx)
+            break
+
+        except HTTPException:
+            if http_client:
+                await http_client.close()
+            raise
+        except Exception as e:
+            logger.error(f"Request failed for account {account_idx}: {e}")
+            if http_client:
+                await http_client.close()
+            account_manager.mark_failure(account_idx)
+            next_result = account_manager.get_next_account()
+            if next_result is None:
+                raise HTTPException(
+                    status_code=503, detail="No enabled accounts available"
+                )
+            account_idx, account = next_result
+            continue
     else:
-        # Non-streaming mode: shared client for efficient connection reuse
-        shared_client = request.app.state.http_client
-        http_client = KiroHttpClient(auth_manager, shared_client=shared_client)
-    try:
-        # Make request to Kiro API (for both streaming and non-streaming modes)
-        # Important: we wait for Kiro response BEFORE returning StreamingResponse,
-        # so that 200 OK means Kiro accepted the request and started responding
-        response = await http_client.request_with_retry(
-            "POST", url, kiro_payload, stream=True
+        raise HTTPException(status_code=503, detail="No enabled accounts available")
+
+    if response is None or http_client is None:
+        raise HTTPException(
+            status_code=503, detail="Failed to get response from Kiro API"
         )
 
+    try:
         if response.status_code != 200:
             try:
                 error_content = await response.aread()
