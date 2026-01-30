@@ -248,6 +248,33 @@ If you need to manually extract the refresh token (e.g., for debugging), you can
 
 </details>
 
+### Direct Login (Builder ID)
+
+You can authenticate directly through the gateway without needing Kiro IDE or kiro-cli first:
+
+**CLI Login:**
+```bash
+# Start authentication flow
+python main.py login
+
+# Force overwrite existing credentials
+python main.py login --force
+
+# Use specific AWS region
+python main.py login --region eu-west-1
+```
+
+**API Login:**
+```bash
+# Start login flow
+curl -X POST http://localhost:8000/auth/login
+
+# Check status
+curl http://localhost:8000/auth/login/status/{session_id}
+```
+
+Credentials are saved to `~/.kiro-gateway/credentials.json`.
+
 ---
 
 ## 🐳 Docker Deployment
