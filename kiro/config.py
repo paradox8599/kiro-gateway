@@ -527,7 +527,7 @@ def gateway_credentials_exist() -> bool:
     return get_gateway_credentials_path().exists()
 
 
-def save_gateway_credentials(creds: dict) -> None:
+def save_gateway_credentials(creds: list) -> None:
     """
     Save credentials to kiro-gateway credentials file.
 
@@ -535,7 +535,7 @@ def save_gateway_credentials(creds: dict) -> None:
     Uses atomic write (temp file + rename) to prevent corruption.
 
     Args:
-        creds: Dictionary containing credentials to save
+        creds: List of credential dictionaries to save
     """
     import tempfile
     import json
@@ -560,18 +560,77 @@ def save_gateway_credentials(creds: dict) -> None:
         raise
 
 
-def load_gateway_credentials() -> dict:
+def load_gateway_credentials() -> list:
     """
     Load credentials from kiro-gateway credentials file.
 
     Returns:
-        Dictionary containing credentials, or empty dict if file doesn't exist
+        List of credential dictionaries, or empty list if file doesn't exist
     """
     import json
 
     path = get_gateway_credentials_path()
     if not path.exists():
-        return {}
+        return []
 
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def add_or_update_credential(cred: dict) -> bool:
+    """
+    Add new credential or update existing one by email match.
+
+    Args:
+        cred: Credential dictionary containing at minimum 'email' field
+
+    Returns:
+        True if new account was added, False if existing account was updated
+    """
+    credentials = load_gateway_credentials()
+    email = cred.get("email")
+
+    for i, existing in enumerate(credentials):
+        if existing.get("email") == email:
+            credentials[i] = cred
+            save_gateway_credentials(credentials)
+            return False
+
+    credentials.append(cred)
+    save_gateway_credentials(credentials)
+    return True
+
+
+def remove_credential(index_or_email: str | int) -> None:
+    """
+    Remove credential by index or email.
+
+    Args:
+        index_or_email: Integer index or string email to identify credential
+    """
+    credentials = load_gateway_credentials()
+
+    if isinstance(index_or_email, int):
+        if 0 <= index_or_email < len(credentials):
+            credentials.pop(index_or_email)
+            save_gateway_credentials(credentials)
+    else:
+        credentials = [c for c in credentials if c.get("email") != index_or_email]
+        save_gateway_credentials(credentials)
+
+
+def update_credential_status(index: int, enabled: bool, failure_count: int) -> None:
+    """
+    Update credential status fields.
+
+    Args:
+        index: Index of credential to update
+        enabled: Whether account is enabled
+        failure_count: Number of consecutive failures
+    """
+    credentials = load_gateway_credentials()
+
+    if 0 <= index < len(credentials):
+        credentials[index]["enabled"] = enabled
+        credentials[index]["failureCount"] = failure_count
+        save_gateway_credentials(credentials)
