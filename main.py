@@ -373,59 +373,104 @@ async def lifespan(app: FastAPI):
         app.state.account_manager = None
         logger.warning("No accounts configured. Run 'python main.py login' first.")
 
-    # Legacy auth_manager for backward compatibility (model loading, etc.)
-    # TODO: Remove once all routes use account_manager
-    oauth_creds_file = None
-    if gateway_credentials_exist():
-        oauth_creds_file = str(get_gateway_credentials_path())
-
-    app.state.auth_manager = KiroAuthManager(
-        refresh_token=REFRESH_TOKEN,
-        profile_arn=PROFILE_ARN,
-        region=REGION,
-        creds_file=oauth_creds_file or (KIRO_CREDS_FILE if KIRO_CREDS_FILE else None),
-        sqlite_db=KIRO_CLI_DB_FILE if KIRO_CLI_DB_FILE else None,
-    )
-
-    # Create model cache
     app.state.model_cache = ModelInfoCache()
 
-    # BLOCKING: Load models from Kiro API at startup
-    # This ensures the cache is populated BEFORE accepting any requests.
-    # No race conditions - requests only start after yield.
     logger.info("Loading models from Kiro API...")
-    try:
-        token = await app.state.auth_manager.get_access_token()
-        from kiro.utils import get_kiro_headers
-        from kiro.auth import AuthType
 
-        headers = get_kiro_headers(app.state.auth_manager, token)
+    token = None
+    headers = None
+    q_host = None
+    params = {"origin": "AI_EDITOR"}
 
-        # Build params - profileArn is only needed for Kiro Desktop auth
-        params = {"origin": "AI_EDITOR"}
-        if (
-            app.state.auth_manager.auth_type == AuthType.KIRO_DESKTOP
-            and app.state.auth_manager.profile_arn
-        ):
-            params["profileArn"] = app.state.auth_manager.profile_arn
+    if app.state.account_manager:
+        enabled = app.state.account_manager.get_enabled_accounts()
+        if enabled:
+            account_idx, account = enabled[0]
+            try:
+                token = await app.state.account_manager.get_valid_token(account_idx)
 
-        list_models_url = f"{app.state.auth_manager.q_host}/ListAvailableModels"
-        logger.debug(f"Fetching models from: {list_models_url}")
+                from kiro.utils import get_machine_fingerprint
+                import uuid
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(list_models_url, headers=headers, params=params)
+                fingerprint = get_machine_fingerprint()
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": f"aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-{fingerprint}",
+                    "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}",
+                    "x-amzn-codewhisperer-optout": "true",
+                    "x-amzn-kiro-agent-mode": "vibe",
+                    "amz-sdk-invocation-id": str(uuid.uuid4()),
+                    "amz-sdk-request": "attempt=1; max=3",
+                }
 
-            if response.status_code == 200:
-                data = response.json()
-                models_list = data.get("models", [])
-                await app.state.model_cache.update(models_list)
+                region = account.get("region", REGION)
+                q_host = f"https://q.{region}.amazonaws.com"
+
                 logger.debug(
-                    f"Successfully loaded {len(models_list)} models from Kiro API"
+                    f"Using AccountManager for model loading (account {account_idx})"
                 )
-            else:
-                raise Exception(f"HTTP {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Failed to get token from AccountManager: {e}")
+                token = None
+        else:
+            logger.warning("No enabled accounts in AccountManager")
+
+    if not token:
+        logger.debug("Falling back to legacy KiroAuthManager for model loading")
+
+        oauth_creds_file = None
+        if gateway_credentials_exist():
+            oauth_creds_file = str(get_gateway_credentials_path())
+
+        app.state.auth_manager = KiroAuthManager(
+            refresh_token=REFRESH_TOKEN,
+            profile_arn=PROFILE_ARN,
+            region=REGION,
+            creds_file=oauth_creds_file
+            or (KIRO_CREDS_FILE if KIRO_CREDS_FILE else None),
+            sqlite_db=KIRO_CLI_DB_FILE if KIRO_CLI_DB_FILE else None,
+        )
+
+        try:
+            token = await app.state.auth_manager.get_access_token()
+            from kiro.utils import get_kiro_headers
+            from kiro.auth import AuthType
+
+            headers = get_kiro_headers(app.state.auth_manager, token)
+            q_host = app.state.auth_manager.q_host
+
+            if (
+                app.state.auth_manager.auth_type == AuthType.KIRO_DESKTOP
+                and app.state.auth_manager.profile_arn
+            ):
+                params["profileArn"] = app.state.auth_manager.profile_arn
+        except Exception as e:
+            logger.error(f"Failed to initialize legacy auth: {e}")
+            token = None
+
+    try:
+        if token and headers and q_host:
+            list_models_url = f"{q_host}/ListAvailableModels"
+            logger.debug(f"Fetching models from: {list_models_url}")
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    list_models_url, headers=headers, params=params
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    models_list = data.get("models", [])
+                    await app.state.model_cache.update(models_list)
+                    logger.debug(
+                        f"Successfully loaded {len(models_list)} models from Kiro API"
+                    )
+                else:
+                    raise Exception(f"HTTP {response.status_code}")
+        else:
+            raise Exception("No valid credentials available")
     except Exception as e:
-        # FALLBACK: Use built-in model list
         logger.error(f"Failed to fetch models from Kiro API: {e}")
         logger.error(
             "Using pre-configured fallback models. Not all models may be available on your plan, or the list may be outdated."
