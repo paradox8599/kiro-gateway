@@ -354,8 +354,8 @@ def calculate_tokens_from_context_usage(
     """
     if context_usage_percentage is not None and context_usage_percentage > 0:
         max_input_tokens = model_cache.get_max_input_tokens(model)
-        # Kiro API returns context_usage as a ratio (0.309), not percentage (30.9)
-        total_tokens = int(context_usage_percentage * max_input_tokens)
+        ratio = context_usage_percentage / 100 if context_usage_percentage > 1 else context_usage_percentage
+        total_tokens = int(ratio * max_input_tokens)
         prompt_tokens = max(0, total_tokens - completion_tokens)
         return prompt_tokens, total_tokens, "subtraction", "API Kiro"
     
