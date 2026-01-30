@@ -366,12 +366,20 @@ async def messages(
 
         headers = build_headers(token)
 
-        # Use per-request client for streaming to avoid CLOSE_WAIT leak (issue #54)
         timeout = httpx.Timeout(120.0, read=STREAMING_READ_TIMEOUT)
         http_client = httpx.AsyncClient(timeout=timeout)
 
         try:
-            response = await http_client.post(url, json=kiro_payload, headers=headers)
+            if request_data.stream:
+                headers["Connection"] = "close"
+                req = http_client.build_request(
+                    "POST", url, json=kiro_payload, headers=headers
+                )
+                response = await http_client.send(req, stream=True)
+            else:
+                response = await http_client.post(
+                    url, json=kiro_payload, headers=headers
+                )
 
             if response.status_code == 200:
                 account_manager.mark_success(account_idx)
