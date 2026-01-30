@@ -12,6 +12,8 @@ The main goal of the system is to provide transparent compatibility between mult
 |-----|-----------|--------|
 | **OpenAI** | `/v1/models`, `/v1/chat/completions` | ✅ Supported |
 | **Anthropic** | `/v1/messages` | ✅ Supported |
+| **Account Management** | `/accounts`, `/usage` | ✅ Supported |
+| **Device Auth** | `/auth/login` | ✅ Supported |
 
 ### Architectural Model
 
@@ -58,6 +60,7 @@ The project is organized as a modular Python package `kiro/`:
 ```
 kiro-gateway/
 ├── main.py                    # Entry point, FastAPI application creation
+├── pyproject.toml             # Project configuration (uv)
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Environment configuration example
 │
@@ -69,12 +72,17 @@ kiro-gateway/
 │   │   # ═══════════════════════════════════════════════════════
 │   ├── config.py              # Configuration and constants
 │   ├── auth.py                # KiroAuthManager - token management
+│   ├── account_manager.py     # AccountManager - multi-account support
+│   ├── device_auth.py         # DeviceAuthFlow - OAuth device flow
 │   ├── cache.py               # ModelInfoCache - model cache
+│   ├── model_resolver.py      # ModelResolver - dynamic model resolution
 │   ├── http_client.py         # HTTP client with retry logic
+│   ├── network_errors.py      # Network error classification
 │   ├── parsers.py             # AWS SSE stream parsers
 │   ├── utils.py               # Helper utilities
 │   ├── tokenizer.py           # Token counting (tiktoken)
 │   ├── debug_logger.py        # Debug request logging
+│   ├── debug_middleware.py    # Debug middleware
 │   ├── exceptions.py          # Exception handlers
 │   ├── thinking_parser.py     # Thinking blocks parser
 │   │
@@ -98,7 +106,13 @@ kiro-gateway/
 │   ├── models_anthropic.py    # Pydantic models for Anthropic API
 │   ├── converters_anthropic.py # Anthropic → Kiro adapter
 │   ├── routes_anthropic.py    # FastAPI routes for Anthropic
-│   └── streaming_anthropic.py # Kiro → Anthropic SSE formatter
+│   ├── streaming_anthropic.py # Kiro → Anthropic SSE formatter
+│   │
+│   │   # ═══════════════════════════════════════════════════════
+│   │   # MANAGEMENT API LAYER
+│   │   # ═══════════════════════════════════════════════════════
+│   ├── routes_accounts.py     # Account management endpoints
+│   └── routes_auth.py         # Device authorization endpoints
 │
 ├── tests/                     # Tests
 │   ├── conftest.py            # Pytest fixtures
@@ -118,9 +132,10 @@ The architecture is built on the principle of **maximum code reuse**:
 
 | Layer | Purpose | Files |
 |-------|---------|-------|
-| **Shared Layer** | Infrastructure independent of API format | `auth.py`, `http_client.py`, `cache.py`, `parsers.py`, `tokenizer.py` |
+| **Shared Layer** | Infrastructure independent of API format | `auth.py`, `account_manager.py`, `device_auth.py`, `http_client.py`, `cache.py`, `model_resolver.py`, `parsers.py`, `tokenizer.py`, `network_errors.py` |
 | **Core Layer** | Shared business logic for conversion | `converters_core.py`, `streaming_core.py` |
 | **API Layer** | Thin adapters for specific formats | `*_openai.py`, `*_anthropic.py` |
+| **Management Layer** | Account and auth management | `routes_accounts.py`, `routes_auth.py` |
 
 ## 3. Architectural Topology and Components
 
@@ -135,7 +150,7 @@ The `main.py` file is responsible for:
    - Presence of `.env` file
    - Presence of credentials (REFRESH_TOKEN or KIRO_CREDS_FILE)
 3. **Lifespan Manager** — creation and initialization of:
-   - `KiroAuthManager` for token management
+   - `AccountManager` for multi-account token management
    - `ModelInfoCache` for model caching
 4. **Error handler registration** — `validation_exception_handler` for 422 errors
 5. **Route connection** — `app.include_router(router)`
@@ -232,6 +247,68 @@ auth_manager = KiroAuthManager(
     creds_file="~/.aws/sso/cache/kiro-auth-token.json"
 )
 token = await auth_manager.get_access_token()
+```
+
+#### AccountManager (`kiro/account_manager.py`)
+
+**Role:** Manages multiple Kiro accounts with load balancing and automatic failover.
+
+**Capabilities:**
+- Round-robin account selection via `get_next_account()`
+- Per-account token refresh with `get_valid_token(index)`
+- Automatic failure tracking (disables after 5 consecutive failures)
+- Rate limit handling with account rotation
+- Payment error (402) handling with account disabling
+
+**Error Handling Strategy:**
+
+| Error Code | Action |
+|------------|--------|
+| `429` | Rotate to next account (rate limit) |
+| `402` | Disable account, rotate (payment required) |
+| `403` | Force refresh token, retry same account |
+
+**Main methods:**
+- `get_next_account()` — round-robin account selection
+- `get_valid_token(index)` — get valid token for specific account
+- `mark_success(index)` — reset failure count on success
+- `mark_failure(index)` — increment failure count
+- `handle_rate_limit(index)` — handle 429 errors
+- `force_refresh(index)` — force token refresh
+
+```python
+# Usage example
+account_manager = AccountManager(credentials_list)
+index = account_manager.get_next_account()
+token = await account_manager.get_valid_token(index)
+# On success:
+account_manager.mark_success(index)
+# On failure:
+account_manager.mark_failure(index)
+```
+
+#### DeviceAuthFlow (`kiro/device_auth.py`)
+
+**Role:** Implements OAuth 2.0 Device Authorization Grant (RFC 8628) for headless authentication.
+
+**Flow:**
+1. Register OIDC client → get `clientId`, `clientSecret`
+2. Start device authorization → get `deviceCode`, `userCode`, `verificationUri`
+3. User visits URL and authenticates in browser
+4. Poll for token until user completes auth or timeout
+5. Return credentials compatible with KiroAuthManager
+
+**Main methods:**
+- `start_authorization()` — initiate device flow, returns user code and URL
+- `poll_for_token()` — poll until user completes authentication
+- `get_credentials()` — full flow: start + poll, returns credentials
+
+```python
+# Usage example
+flow = DeviceAuthFlow(region="us-east-1")
+creds = await flow.get_credentials()
+# User visits creds["verification_uri_complete"] and authenticates
+# Returns: {"accessToken": "...", "refreshToken": "...", ...}
 ```
 
 #### ModelInfoCache (`kiro/cache.py`)
@@ -386,17 +463,51 @@ Supports async context manager (`async with`).
 | `/health` | GET | Detailed health check (status, timestamp, version) |
 | `/v1/models` | GET | List of available models (requires API key) |
 | `/v1/chat/completions` | POST | Chat completions (requires API key) |
+| `/usage` | GET | Check account credit usage |
 
 **Authentication:** Bearer token in `Authorization` header
 
-### 3.11. Exception Handling (`kiro/exceptions.py`)
+### 3.11. Account Management Routes (`kiro/routes_accounts.py`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/accounts` | GET | List all accounts with status |
+| `/accounts/{index}/enable` | POST | Enable account by index |
+| `/accounts/{index}/disable` | POST | Disable account by index |
+| `/accounts/{index}` | DELETE | Remove account by index |
+
+**Authentication:** Bearer token in `Authorization` header
+
+### 3.12. Device Auth Routes (`kiro/routes_auth.py`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/login` | POST | Start device authorization flow |
+| `/auth/login/status/{session_id}` | GET | Check authorization status |
+| `/auth/login/{session_id}` | DELETE | Cancel pending authorization |
+
+**No authentication required** — these endpoints are used to obtain credentials.
+
+### 3.13. Exception Handling (`kiro/exceptions.py`)
 
 | Function | Description |
 |----------|-------------|
 | `sanitize_validation_errors(errors)` | Convert bytes to strings for JSON serialization |
 | `validation_exception_handler(request, exc)` | Pydantic validation error handler (422) |
 
-### 3.12. Debug Logging (`kiro/debug_logger.py`)
+### 3.14. Network Error Classification (`kiro/network_errors.py`)
+
+Classifies network errors into user-friendly categories:
+
+| Error Type | User Message |
+|------------|--------------|
+| `httpx.ConnectTimeout` | "Connection timeout" |
+| `httpx.ReadTimeout` | "Server response timeout" |
+| DNS errors | "DNS resolution failed" |
+| Connection refused | "Connection refused" |
+| SSL errors | "SSL/TLS error" |
+
+### 3.15. Debug Logging (`kiro/debug_logger.py`)
 
 **Class:** `DebugLogger` (singleton)
 
@@ -417,7 +528,25 @@ Supports async context manager (`async with`).
 - `response_stream_raw.txt` — raw stream from Kiro
 - `response_stream_modified.txt` — transformed stream (OpenAI format)
 
-### 3.13. Tokenizer (`kiro/tokenizer.py`)
+### 3.16. Model Resolver (`kiro/model_resolver.py`)
+
+**Role:** 4-layer dynamic model resolution pipeline.
+
+**Resolution Pipeline:**
+1. **Normalize Name**: Convert client formats to Kiro format (dashes→dots, strip dates)
+2. **Check Dynamic Cache**: Models from `/ListAvailableModels` API
+3. **Check Hidden Models**: Manual config for undocumented models
+4. **Pass-through**: Unknown models sent to Kiro (let Kiro decide)
+
+**Key principle:** We are a gateway, not a gatekeeper. Kiro API is the final arbiter.
+
+```python
+# Example normalization
+"claude-haiku-4-5-20251001" → "claude-haiku-4.5"
+"claude-opus-4-5" → "claude-opus-4.5"
+```
+
+### 3.17. Tokenizer (`kiro/tokenizer.py`)
 
 **Problem:** Kiro API does not return token counts directly. Instead, the API only provides `context_usage_percentage` — the percentage of model context usage.
 
@@ -452,11 +581,12 @@ prompt_tokens = total_tokens - completion_tokens             (subtraction)
 
 **Accuracy:** ~97-99.7% compared to API data.
 
-### 3.14. Kiro API Endpoints
+### 3.18. Kiro API Endpoints
 
 All URLs are dynamically formed based on the region:
 
 *   **Token Refresh:** `POST https://prod.{region}.auth.desktop.kiro.dev/refreshToken`
+*   **AWS SSO OIDC:** `POST https://oidc.{region}.amazonaws.com/token` (for device auth)
 *   **List Models:** `GET https://q.{region}.amazonaws.com/ListAvailableModels`
 *   **Generate Response:** `POST https://codewhisperer.{region}.amazonaws.com/generateAssistantResponse`
 
@@ -660,6 +790,7 @@ TOOL_DESCRIPTION_MAX_LENGTH="10000"
 |----------|--------|-------------|
 | `/` | GET | Health check |
 | `/health` | GET | Detailed health check |
+| `/usage` | GET | Check account credit usage |
 
 ### 7.2 OpenAI-compatible Endpoints
 
@@ -678,7 +809,28 @@ TOOL_DESCRIPTION_MAX_LENGTH="10000"
 
 **Authentication:** `x-api-key: {PROXY_API_KEY}` + `anthropic-version: 2023-06-01`
 
-### 7.4 Format Comparison
+### 7.4 Account Management Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/accounts` | GET | List all accounts with status |
+| `/accounts/{index}/enable` | POST | Enable account by index |
+| `/accounts/{index}/disable` | POST | Disable account by index |
+| `/accounts/{index}` | DELETE | Remove account by index |
+
+**Authentication:** `Authorization: Bearer {PROXY_API_KEY}`
+
+### 7.5 Device Authorization Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/login` | POST | Start device authorization flow |
+| `/auth/login/status/{session_id}` | GET | Check authorization status |
+| `/auth/login/{session_id}` | DELETE | Cancel pending authorization |
+
+**No authentication required** — used to obtain credentials via Builder ID or Organization SSO.
+
+### 7.6 Format Comparison
 
 | Aspect | OpenAI | Anthropic |
 |--------|--------|-----------|

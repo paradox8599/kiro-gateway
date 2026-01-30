@@ -4,20 +4,29 @@
 
 **Proxy gateway for Kiro API (Amazon Q Developer / AWS CodeWhisperer)**
 
-[🇷🇺 Русский](docs/ru/README.md) • [🇨🇳 中文](docs/zh/README.md) • [🇪🇸 Español](docs/es/README.md) • [🇮🇩 Indonesia](docs/id/README.md) • [🇧🇷 Português](docs/pt/README.md) • [🇯🇵 日本語](docs/ja/README.md) • [🇰🇷 한국어](docs/ko/README.md)
-
 Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
-[![Sponsor](https://img.shields.io/badge/💖_Sponsor-Support_Development-ff69b4)](#-support-the-project)
 
-*Use Claude models from Kiro with Claude Code, OpenCode, Cursor, Cline, Roo Code, Kilo Code, Obsidian, OpenAI SDK, LangChain, Continue and other OpenAI or Anthropic compatible tools*
+_Use Claude models from Kiro with Claude Code, OpenCode, Cursor, Cline, Roo Code, Kilo Code, Aider, Obsidian, OpenAI SDK, LangChain, Continue and other OpenAI or Anthropic compatible tools_
 
-[Models](#-supported-models) • [Features](#-features) • [Quick Start](#-quick-start) • [Configuration](#%EF%B8%8F-configuration) • [💖 Sponsor](#-support-the-project)
+[Models](#-supported-models) • [Features](#-features) • [Quick Start](#-quick-start) • [Configuration](#%EF%B8%8F-configuration)
 
 </div>
+
+---
+
+## 🔄 Recent Updates
+
+| Date     | Feature                                                           |
+| -------- | ----------------------------------------------------------------- |
+| Jan 2026 | **Multi-account support** with load balancing and auto-failover   |
+| Jan 2026 | **Direct login** via Builder ID or Organization SSO               |
+| Jan 2026 | **Usage tracking** - check account credits via CLI or API         |
+| Jan 2026 | **uv package manager** migration for faster dependency management |
+| Jan 2026 | **403 token expired handling** with automatic force refresh       |
 
 ---
 
@@ -41,34 +50,40 @@ Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 
 ## ✨ Features
 
-| Feature | Description |
-|---------|-------------|
-| 🔌 **OpenAI-compatible API** | Works with any OpenAI-compatible tool |
-| 🔌 **Anthropic-compatible API** | Native `/v1/messages` endpoint |
-| 🌐 **VPN/Proxy Support** | HTTP/SOCKS5 proxy for restricted networks |
-| 🧠 **Extended Thinking** | Reasoning is exclusive to our project |
-| 👁️ **Vision Support** | Send images to model |
-| 🛠️ **Tool Calling** | Supports function calling |
-| 💬 **Full message history** | Passes complete conversation context |
-| 📡 **Streaming** | Full SSE streaming support |
-| 🔄 **Retry Logic** | Automatic retries on errors (403, 429, 5xx) |
-| 📋 **Extended model list** | Including versioned models |
-| 🔐 **Smart token management** | Automatic refresh before expiration |
+| Feature                         | Description                                                      |
+| ------------------------------- | ---------------------------------------------------------------- |
+| 🔌 **OpenAI-compatible API**    | Works with any OpenAI-compatible tool                            |
+| 🔌 **Anthropic-compatible API** | Native `/v1/messages` endpoint                                   |
+| 👥 **Multi-Account Support**    | Load balance across multiple Kiro accounts with auto-failover    |
+| 🔑 **Direct Login**             | Authenticate via Builder ID or Organization SSO without Kiro IDE |
+| 📊 **Usage Tracking**           | Check account credits and limits via CLI or API                  |
+| 🌐 **VPN/Proxy Support**        | HTTP/SOCKS5 proxy for restricted networks                        |
+| 🧠 **Extended Thinking**        | Reasoning is exclusive to our project                            |
+| 👁️ **Vision Support**           | Send images to model                                             |
+| 🛠️ **Tool Calling**             | Supports function calling                                        |
+| 💬 **Full message history**     | Passes complete conversation context                             |
+| 📡 **Streaming**                | Full SSE streaming support                                       |
+| 🔄 **Retry Logic**              | Automatic retries with token refresh on 403, rotation on 429     |
+| 📋 **Extended model list**      | Including versioned models                                       |
+| 🔐 **Smart token management**   | Automatic refresh before expiration                              |
 
 ---
 
 ## 🚀 Quick Start
 
 **Choose your deployment method:**
+
 - 🐍 **Native Python** - Full control, easy debugging
 - 🐳 **Docker** - Isolated environment, easy deployment → [jump to Docker](#-docker-deployment)
 
 ### Prerequisites
 
 - Python 3.10+
+- [uv](https://docs.astral.sh/uv/) package manager (recommended)
 - One of the following:
   - [Kiro IDE](https://kiro.dev/) with logged in account, OR
-  - [Kiro CLI](https://kiro.dev/cli/) with AWS SSO (AWS IAM Identity Center, OIDC) - free Builder ID or corporate account
+  - [Kiro CLI](https://kiro.dev/cli/) with AWS SSO (AWS IAM Identity Center, OIDC) - free Builder ID or corporate account, OR
+  - Direct login via Builder ID or Organization SSO (no external tools needed)
 
 ### Installation
 
@@ -107,6 +122,7 @@ The server will be available at `http://localhost:8000`
 Specify the path to the credentials file:
 
 Works with:
+
 - **Kiro IDE** (standard) - for personal accounts
 - **Enterprise** - for corporate accounts with SSO
 
@@ -128,7 +144,7 @@ PROXY_API_KEY="my-super-secret-password-123"
   "expiresAt": "2025-01-12T23:00:00.000Z",
   "profileArn": "arn:aws:codewhisperer:us-east-1:...",
   "region": "us-east-1",
-  "clientIdHash": "abc123..."  // Optional: for corporate SSO setups
+  "clientIdHash": "abc123..." // Optional: for corporate SSO setups
 }
 ```
 
@@ -195,7 +211,6 @@ The gateway automatically detects the authentication type based on the credentia
 
 - **Kiro Desktop Auth** (default): Used when `clientId` and `clientSecret` are NOT present
   - Endpoint: `https://prod.{region}.auth.desktop.kiro.dev/refreshToken`
-  
 - **AWS SSO (OIDC)**: Used when `clientId` and `clientSecret` ARE present
   - Endpoint: `https://oidc.{region}.amazonaws.com/token`
 
@@ -220,12 +235,13 @@ PROXY_API_KEY="my-super-secret-password-123"
 <details>
 <summary>📄 Database locations</summary>
 
-| CLI Tool | Database Path |
-|----------|---------------|
-| kiro-cli | `~/.local/share/kiro-cli/data.sqlite3` |
+| CLI Tool               | Database Path                          |
+| ---------------------- | -------------------------------------- |
+| kiro-cli               | `~/.local/share/kiro-cli/data.sqlite3` |
 | amazon-q-developer-cli | `~/.local/share/amazon-q/data.sqlite3` |
 
 The gateway reads credentials from the `auth_kv` table which stores:
+
 - `kirocli:odic:token` or `codewhisperer:odic:token` — access token, refresh token, expiration
 - `kirocli:odic:device-registration` or `codewhisperer:odic:device-registration` — client ID and secret
 
@@ -236,10 +252,12 @@ Both key formats are supported for compatibility with different kiro-cli version
 ### Getting Credentials
 
 **For Kiro IDE users:**
+
 - Log in to Kiro IDE and use Option 1 above (JSON credentials file)
 - The credentials file is created automatically after login
 
 **For Kiro CLI users:**
+
 - Log in with `kiro-cli login` and use Option 3 or Option 4 above
 - No manual token extraction needed!
 
@@ -247,6 +265,7 @@ Both key formats are supported for compatibility with different kiro-cli version
 <summary>🔧 Advanced: Manual token extraction</summary>
 
 If you need to manually extract the refresh token (e.g., for debugging), you can intercept Kiro IDE traffic:
+
 - Look for requests to: `prod.us-east-1.auth.desktop.kiro.dev/refreshToken`
 
 </details>
@@ -291,6 +310,7 @@ curl -X DELETE http://localhost:8000/auth/login/{session_id}
 ```
 
 **Response from POST /auth/login:**
+
 ```json
 {
   "session_id": "abc123",
@@ -381,6 +401,7 @@ python main.py usage --region eu-west-1
 ```
 
 **Example output:**
+
 ```
 Kiro Usage Summary
 ==================
@@ -402,6 +423,7 @@ curl -H "Authorization: Bearer YOUR_PROXY_KEY" http://localhost:8000/usage
 ```
 
 **Response:**
+
 ```json
 {
   "days_until_reset": 15,
@@ -464,6 +486,7 @@ docker run -d \
 <summary>🔹 Using Credentials File</summary>
 
 **Linux/macOS:**
+
 ```bash
 docker run -d \
   -p 8000:8000 \
@@ -475,6 +498,7 @@ docker run -d \
 ```
 
 **Windows (PowerShell):**
+
 ```powershell
 docker run -d `
   -p 8000:8000 `
@@ -503,13 +527,13 @@ Edit `docker-compose.yml` and uncomment volume mounts for your OS:
 ```yaml
 volumes:
   # Kiro IDE credentials (choose your OS)
-  - ~/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro              # Linux/macOS
+  - ~/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro # Linux/macOS
   # - ${USERPROFILE}/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro  # Windows
-  
+
   # kiro-cli database (choose your OS)
-  - ~/.local/share/kiro-cli:/home/kiro/.local/share/kiro-cli:ro  # Linux/macOS
+  - ~/.local/share/kiro-cli:/home/kiro/.local/share/kiro-cli:ro # Linux/macOS
   # - ${USERPROFILE}/.local/share/kiro-cli:/home/kiro/.local/share/kiro-cli:ro  # Windows
-  
+
   # Debug logs (optional)
   - ./debug_logs:/app/debug_logs
 ```
@@ -568,16 +592,17 @@ VPN_PROXY_URL=192.168.1.100:8080
 
 ### When You Need This
 
-| Situation | Solution |
-|-----------|----------|
-| Connection timeouts to AWS | Use VPN/proxy to route traffic |
-| Corporate network restrictions | Configure your company's proxy |
-| Regional connectivity issues | Use a VPN service with proxy support |
-| Privacy requirements | Route through your own proxy server |
+| Situation                      | Solution                             |
+| ------------------------------ | ------------------------------------ |
+| Connection timeouts to AWS     | Use VPN/proxy to route traffic       |
+| Corporate network restrictions | Configure your company's proxy       |
+| Regional connectivity issues   | Use a VPN service with proxy support |
+| Privacy requirements           | Route through your own proxy server  |
 
 ### Popular VPN Software with Proxy Support
 
 Most VPN clients provide a local proxy server you can use:
+
 - **Sing-box** — Modern VPN client with HTTP/SOCKS5 proxy
 - **Clash** — Usually runs on `http://127.0.0.1:7890`
 - **V2Ray** — Configurable SOCKS5/HTTP proxy
@@ -592,13 +617,21 @@ Leave `VPN_PROXY_URL` empty (default) if you don't need proxy support.
 
 ### Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Health check |
-| `/health` | GET | Detailed health check |
-| `/v1/models` | GET | List available models |
-| `/v1/chat/completions` | POST | OpenAI Chat Completions API |
-| `/v1/messages` | POST | Anthropic Messages API |
+| Endpoint                          | Method | Description                     |
+| --------------------------------- | ------ | ------------------------------- |
+| `/`                               | GET    | Health check                    |
+| `/health`                         | GET    | Detailed health check           |
+| `/v1/models`                      | GET    | List available models           |
+| `/v1/chat/completions`            | POST   | OpenAI Chat Completions API     |
+| `/v1/messages`                    | POST   | Anthropic Messages API          |
+| `/usage`                          | GET    | Check account credit usage      |
+| `/accounts`                       | GET    | List all accounts               |
+| `/accounts/{index}/enable`        | POST   | Enable an account               |
+| `/accounts/{index}/disable`       | POST   | Disable an account              |
+| `/accounts/{index}`               | DELETE | Remove an account               |
+| `/auth/login`                     | POST   | Start Builder ID/SSO login flow |
+| `/auth/login/status/{session_id}` | GET    | Check login status              |
+| `/auth/login/{session_id}`        | DELETE | Cancel login session            |
 
 ---
 
@@ -823,24 +856,24 @@ DEBUG_MODE=errors
 
 ### Debug Modes
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `off` | Disabled (default) | Production |
+| Mode     | Description                                   | Use Case                            |
+| -------- | --------------------------------------------- | ----------------------------------- |
+| `off`    | Disabled (default)                            | Production                          |
 | `errors` | Save logs only for failed requests (4xx, 5xx) | **Recommended for troubleshooting** |
-| `all` | Save logs for every request | Development/debugging |
+| `all`    | Save logs for every request                   | Development/debugging               |
 
 ### Debug Files
 
 When enabled, requests are logged to the `debug_logs/` folder:
 
-| File | Description |
-|------|-------------|
-| `request_body.json` | Incoming request from client (OpenAI format) |
-| `kiro_request_body.json` | Request sent to Kiro API |
-| `response_stream_raw.txt` | Raw stream from Kiro |
-| `response_stream_modified.txt` | Transformed stream (OpenAI format) |
-| `app_logs.txt` | Application logs for the request |
-| `error_info.json` | Error details (only on errors) |
+| File                           | Description                                  |
+| ------------------------------ | -------------------------------------------- |
+| `request_body.json`            | Incoming request from client (OpenAI format) |
+| `kiro_request_body.json`       | Request sent to Kiro API                     |
+| `response_stream_raw.txt`      | Raw stream from Kiro                         |
+| `response_stream_modified.txt` | Transformed stream (OpenAI format)           |
+| `app_logs.txt`                 | Application logs for the request             |
+| `error_info.json`              | Error details (only on errors)               |
 
 ---
 
@@ -849,6 +882,7 @@ When enabled, requests are logged to the `debug_logs/` folder:
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
 This means:
+
 - ✅ You can use, modify, and distribute this software
 - ✅ You can use it for commercial purposes
 - ⚠️ **You must disclose source code** when you distribute the software
@@ -864,41 +898,10 @@ AGPL-3.0 ensures that improvements to this software benefit the entire community
 ### Contributor License Agreement (CLA)
 
 By submitting a contribution to this project, you agree to the terms of our [Contributor License Agreement (CLA)](CLA.md). This ensures that:
+
 - You have the right to submit the contribution
 - You grant the maintainer rights to use and relicense your contribution
 - The project remains legally protected
-
----
-
-## 💖 Support the Project
-
-<div align="center">
-
-<img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smilies/Smiling%20Face%20with%20Hearts.png" alt="Love" width="80" />
-
-**If this project saved you time or money, consider supporting it!**
-
-Every contribution helps keep this project alive and growing
-
-<br>
-
-### 🤑 Donate
-
-[**☕ One-time Donation**](https://app.lava.top/jwadow?tabId=donate) &nbsp;•&nbsp; [**💎 Monthly Support**](https://app.lava.top/jwadow?tabId=subscriptions)
-
-<br>
-
-### 🪙 Or send crypto
-
-| Currency | Network | Address |
-|:--------:|:-------:|:--------|
-| **USDT** | TRC20 | `TSVtgRc9pkC1UgcbVeijBHjFmpkYHDRu26` |
-| **BTC** | Bitcoin | `12GZqxqpcBsqJ4Vf1YreLqwoMGvzBPgJq6` |
-| **ETH** | Ethereum | `0xc86eab3bba3bbaf4eb5b5fff8586f1460f1fd395` |
-| **SOL** | Solana | `9amykF7KibZmdaw66a1oqYJyi75fRqgdsqnG66AK3jvh` |
-| **TON** | TON | `UQBVh8T1H3GI7gd7b-_PPNnxHYYxptrcCVf3qQk5v41h3QTM` |
-
-</div>
 
 ---
 
