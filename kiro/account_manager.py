@@ -29,7 +29,7 @@ Manages multiple Kiro accounts with:
 
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Any, Callable
 
 import httpx
 from loguru import logger
@@ -365,6 +365,70 @@ class AccountManager:
         else:
             await self._refresh_token_kiro_desktop(index)
 
+    async def _retry_with_backoff(
+        self,
+        operation: str,
+        func: Callable,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+    ) -> Any:
+        """
+        Execute async function with exponential backoff retry.
+
+        Retries on transient failures:
+        - Network errors (timeouts, connection errors)
+        - Server errors (5xx)
+        - Rate limits (429)
+
+        Does NOT retry on client errors (4xx except 429).
+
+        Args:
+            operation: Description for logging
+            func: Async callable to execute
+            max_retries: Maximum retry attempts (default: 3)
+            base_delay: Initial delay in seconds, doubles each retry (default: 1.0)
+
+        Returns:
+            Result from successful function call
+
+        Raises:
+            Last exception if all retries fail
+        """
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                return await func()
+            except httpx.TimeoutException as e:
+                last_exception = e
+                logger.warning(
+                    f"{operation} timeout (attempt {attempt + 1}/{max_retries})"
+                )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code >= 500 or e.response.status_code == 429:
+                    last_exception = e
+                    logger.warning(
+                        f"{operation} server error {e.response.status_code} "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                else:
+                    # Don't retry 4xx errors (except 429)
+                    raise
+            except httpx.RequestError as e:
+                last_exception = e
+                logger.warning(
+                    f"{operation} network error (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+
+            if attempt < max_retries - 1:
+                delay = base_delay * (2**attempt)
+                logger.debug(f"Retrying {operation} in {delay}s...")
+                await asyncio.sleep(delay)
+
+        if last_exception:
+            raise last_exception
+        raise RuntimeError(f"{operation} failed without exception")
+
     async def _refresh_token_kiro_desktop(self, index: int) -> None:
         """
         Refresh token using Kiro Desktop Auth endpoint.
@@ -394,10 +458,15 @@ class AccountManager:
 
         logger.debug(f"Refreshing account {index} via Kiro Desktop Auth")
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        async def do_refresh():
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+
+        data = await self._retry_with_backoff(
+            f"Kiro Desktop token refresh for account {index}", do_refresh
+        )
 
         new_access_token = data.get("accessToken")
         if not new_access_token:
@@ -455,17 +524,22 @@ class AccountManager:
 
         logger.debug(f"Refreshing account {index} via AWS SSO OIDC")
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(url, json=payload, headers=headers)
+        async def do_refresh():
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(url, json=payload, headers=headers)
 
-            if response.status_code != 200:
-                error_body = response.text
-                logger.error(
-                    f"AWS SSO OIDC refresh failed: status={response.status_code}, body={error_body}"
-                )
-                response.raise_for_status()
+                if response.status_code != 200:
+                    error_body = response.text
+                    logger.error(
+                        f"AWS SSO OIDC refresh failed: status={response.status_code}, body={error_body}"
+                    )
+                    response.raise_for_status()
 
-            data = response.json()
+                return response.json()
+
+        data = await self._retry_with_backoff(
+            f"AWS SSO OIDC token refresh for account {index}", do_refresh
+        )
 
         new_access_token = data.get("accessToken")
         if not new_access_token:
