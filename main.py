@@ -41,11 +41,13 @@ Priority: CLI args > Environment variables > Default values
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from datetime import datetime
 
 import httpx
 from fastapi import FastAPI
@@ -78,6 +80,7 @@ from kiro.config import (
     gateway_credentials_exist,
     save_gateway_credentials,
     get_gateway_credentials_path,
+    load_gateway_credentials,
 )
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
@@ -590,6 +593,19 @@ Examples:
         help="SSO start URL for organization (default: Builder ID)",
     )
 
+    usage_parser = subparsers.add_parser(
+        "usage",
+        help="Check account credit usage",
+        description="Display account credit usage and subscription information",
+    )
+    usage_parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        help="AWS region (default: KIRO_REGION or us-east-1)",
+    )
+    usage_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     return parser.parse_args()
 
 
@@ -707,6 +723,86 @@ async def handle_login_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def handle_usage_command(args: argparse.Namespace) -> None:
+    import uuid
+
+    creds_file = None
+    if gateway_credentials_exist():
+        creds_file = str(get_gateway_credentials_path())
+    elif KIRO_CREDS_FILE:
+        creds_file = KIRO_CREDS_FILE
+
+    if not creds_file and not REFRESH_TOKEN and not KIRO_CLI_DB_FILE:
+        logger.error("No credentials found. Run 'python main.py login' first.")
+        sys.exit(1)
+
+    auth_manager = KiroAuthManager(
+        refresh_token=REFRESH_TOKEN,
+        profile_arn=PROFILE_ARN,
+        region=args.region or REGION or "us-east-1",
+        creds_file=creds_file,
+        sqlite_db=KIRO_CLI_DB_FILE if KIRO_CLI_DB_FILE else None,
+    )
+
+    token = await auth_manager.get_access_token()
+    region = args.region or REGION or "us-east-1"
+
+    url = f"https://q.{region}.amazonaws.com/getUsageLimits"
+    params = {
+        "isEmailRequired": "true",
+        "origin": "AI_EDITOR",
+        "resourceType": "AGENTIC_REQUEST",
+    }
+    if PROFILE_ARN:
+        params["profileArn"] = PROFILE_ARN
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-amz-user-agent": "kiro-gateway",
+        "amz-sdk-invocation-id": str(uuid.uuid4()),
+        "amz-sdk-request": "attempt=1;max=1",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print("\n" + "=" * 50)
+        print("  KIRO ACCOUNT USAGE")
+        print("=" * 50)
+
+        sub_info = data.get("subscriptionInfo", {})
+        print(f"\nSubscription: {sub_info.get('subscriptionTitle', 'Unknown')}")
+        print(f"Type: {sub_info.get('type', 'Unknown')}")
+
+        user_info = data.get("userInfo", {})
+        if user_info.get("email"):
+            print(f"Email: {user_info.get('email')}")
+
+        reset_ts = data.get("nextDateReset", 0)
+        if reset_ts:
+            reset_date = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d")
+            print(f"Resets: {reset_date} ({data.get('daysUntilReset', 0)} days)")
+
+        print("\n" + "-" * 50)
+        print("  USAGE BREAKDOWN")
+        print("-" * 50)
+
+        for item in data.get("usageBreakdownList", []):
+            name = item.get("displayName", item.get("resourceType", "Unknown"))
+            current = item.get("currentUsage", 0)
+            limit = item.get("usageLimit", 0)
+            pct = (current / limit * 100) if limit > 0 else 0
+            print(f"\n{name}:")
+            print(f"  {current} / {limit} ({pct:.1f}%)")
+
+        print("\n" + "=" * 50 + "\n")
+
+
 # --- Entry Point ---
 if __name__ == "__main__":
     import uvicorn
@@ -715,6 +811,8 @@ if __name__ == "__main__":
 
     if args.command == "login":
         asyncio.run(handle_login_command(args))
+    elif args.command == "usage":
+        asyncio.run(handle_usage_command(args))
     else:
         validate_configuration()
         _warn_timeout_configuration()
