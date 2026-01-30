@@ -48,8 +48,8 @@ from kiro.streaming_anthropic import (
     stream_kiro_to_anthropic,
     collect_anthropic_response,
 )
-from kiro.http_client import KiroHttpClient
-from kiro.utils import generate_conversation_id
+from kiro.utils import generate_conversation_id, get_machine_fingerprint
+import uuid
 from kiro.tokenizer import count_tools_tokens
 
 # Import debug_logger
@@ -322,83 +322,39 @@ async def messages(
     except Exception as e:
         logger.warning(f"Failed to log Kiro request: {e}")
 
-    # Create HTTP client with retry logic
-    # For streaming: use per-request client to avoid CLOSE_WAIT leak on VPN disconnect (issue #54)
-    # For non-streaming: use shared client for connection pooling
+    # Make HTTP request directly using httpx (not KiroHttpClient which expects KiroAuthManager)
     region = account.get("region", "us-east-1")
-    from kiro.config import get_kiro_api_host
+    from kiro.config import get_kiro_api_host, STREAMING_READ_TIMEOUT
 
     api_host = get_kiro_api_host(region)
     url = f"{api_host}/generateAssistantResponse"
     logger.debug(f"Kiro API URL: {url}")
 
     max_account_retries = len(account_manager.get_enabled_accounts())
-    http_client = None
-    response = None
+    http_client: Optional[httpx.AsyncClient] = None
+    response: Optional[httpx.Response] = None
+
+    # Build headers for Kiro API
+    fingerprint = get_machine_fingerprint()
+
+    def build_headers(access_token: str) -> dict:
+        return {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": f"aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-{fingerprint}",
+            "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}",
+            "x-amzn-codewhisperer-optout": "true",
+            "x-amzn-kiro-agent-mode": "vibe",
+            "amz-sdk-invocation-id": str(uuid.uuid4()),
+            "amz-sdk-request": "attempt=1; max=3",
+        }
 
     for retry_attempt in range(max_account_retries):
-        if request_data.stream:
-            http_client = KiroHttpClient(account, shared_client=None)
-        else:
-            shared_client = request.app.state.http_client
-            http_client = KiroHttpClient(account, shared_client=shared_client)
-
+        # Get fresh token for this attempt
         try:
-            response = await http_client.request_with_retry(
-                "POST", url, kiro_payload, stream=True
-            )
-
-            if response.status_code == 200:
-                account_manager.mark_success(account_idx)
-                break
-
-            if response.status_code == 429:
-                logger.warning(f"Account {account_idx} rate limited (429)")
-                await http_client.close()
-                next_result = account_manager.handle_rate_limit(account_idx)
-                if next_result is None:
-                    raise HTTPException(
-                        status_code=429, detail="All accounts rate limited"
-                    )
-                account_idx, account = next_result
-                try:
-                    token = await account_manager.get_valid_token(account_idx)
-                except (IndexError, ValueError) as e:
-                    logger.error(f"Failed to get token for account {account_idx}: {e}")
-                    raise HTTPException(
-                        status_code=503, detail="Failed to get authentication token"
-                    )
-                continue
-
-            if response.status_code == 402:
-                logger.warning(f"Account {account_idx} payment required (402)")
-                await http_client.close()
-                next_result = account_manager.handle_payment_required(account_idx)
-                if next_result is None:
-                    raise HTTPException(
-                        status_code=402, detail="All accounts have payment issues"
-                    )
-                account_idx, account = next_result
-                try:
-                    token = await account_manager.get_valid_token(account_idx)
-                except (IndexError, ValueError) as e:
-                    logger.error(f"Failed to get token for account {account_idx}: {e}")
-                    raise HTTPException(
-                        status_code=503, detail="Failed to get authentication token"
-                    )
-                continue
-
-            account_manager.mark_failure(account_idx)
-            break
-
-        except HTTPException:
-            if http_client:
-                await http_client.close()
-            raise
-        except Exception as e:
-            logger.error(f"Request failed for account {account_idx}: {e}")
-            if http_client:
-                await http_client.close()
+            token = await account_manager.get_valid_token(account_idx)
+        except (IndexError, ValueError) as e:
+            logger.error(f"Failed to get token for account {account_idx}: {e}")
             account_manager.mark_failure(account_idx)
             next_result = account_manager.get_next_account()
             if next_result is None:
@@ -406,13 +362,61 @@ async def messages(
                     status_code=503, detail="No enabled accounts available"
                 )
             account_idx, account = next_result
-            try:
-                token = await account_manager.get_valid_token(account_idx)
-            except (IndexError, ValueError) as e:
-                logger.error(f"Failed to get token for account {account_idx}: {e}")
+            continue
+
+        headers = build_headers(token)
+
+        # Use per-request client for streaming to avoid CLOSE_WAIT leak (issue #54)
+        timeout = httpx.Timeout(120.0, read=STREAMING_READ_TIMEOUT)
+        http_client = httpx.AsyncClient(timeout=timeout)
+
+        try:
+            response = await http_client.post(url, json=kiro_payload, headers=headers)
+
+            if response.status_code == 200:
+                account_manager.mark_success(account_idx)
+                break
+
+            if response.status_code == 429:
+                logger.warning(f"Account {account_idx} rate limited (429)")
+                await http_client.aclose()
+                next_result = account_manager.handle_rate_limit(account_idx)
+                if next_result is None:
+                    raise HTTPException(
+                        status_code=429, detail="All accounts rate limited"
+                    )
+                account_idx, account = next_result
+                continue
+
+            if response.status_code == 402:
+                logger.warning(f"Account {account_idx} payment required (402)")
+                await http_client.aclose()
+                next_result = account_manager.handle_payment_required(account_idx)
+                if next_result is None:
+                    raise HTTPException(
+                        status_code=402, detail="All accounts have payment issues"
+                    )
+                account_idx, account = next_result
+                continue
+
+            account_manager.mark_failure(account_idx)
+            break
+
+        except HTTPException:
+            if http_client:
+                await http_client.aclose()
+            raise
+        except Exception as e:
+            logger.error(f"Request failed for account {account_idx}: {e}")
+            if http_client:
+                await http_client.aclose()
+            account_manager.mark_failure(account_idx)
+            next_result = account_manager.get_next_account()
+            if next_result is None:
                 raise HTTPException(
-                    status_code=503, detail="Failed to get authentication token"
+                    status_code=503, detail="No enabled accounts available"
                 )
+            account_idx, account = next_result
             continue
     else:
         raise HTTPException(status_code=503, detail="No enabled accounts available")
@@ -448,7 +452,7 @@ async def messages(
             except Exception:
                 error_content = b"Unknown error"
 
-            await http_client.close()
+            await http_client.aclose()
             error_text = error_content.decode("utf-8", errors="replace")
             logger.error(f"Error from Kiro API: {response.status_code} - {error_text}")
 
@@ -514,7 +518,7 @@ async def messages(
                     except Exception:
                         pass
                 finally:
-                    await http_client.close()
+                    await http_client.aclose()
                     if streaming_error:
                         error_type = type(streaming_error).__name__
                         error_msg = (
@@ -559,7 +563,7 @@ async def messages(
                 request_messages=messages_for_tokenizer,
             )
 
-            await http_client.close()
+            await http_client.aclose()
 
             logger.info(f"HTTP 200 - POST /v1/messages (non-streaming) - completed")
 
@@ -569,13 +573,13 @@ async def messages(
             return JSONResponse(content=anthropic_response)
 
     except HTTPException as e:
-        await http_client.close()
+        await http_client.aclose()
         logger.error(f"HTTP {e.status_code} - POST /v1/messages - {e.detail}")
         if debug_logger:
             debug_logger.flush_on_error(e.status_code, str(e.detail))
         raise
     except Exception as e:
-        await http_client.close()
+        await http_client.aclose()
         logger.error(f"Internal error: {e}", exc_info=True)
         logger.error(f"HTTP 500 - POST /v1/messages - {str(e)[:100]}")
         if debug_logger:
