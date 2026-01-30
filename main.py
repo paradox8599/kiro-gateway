@@ -81,8 +81,10 @@ from kiro.config import (
     save_gateway_credentials,
     get_gateway_credentials_path,
     load_gateway_credentials,
+    add_or_update_credential,
 )
-from kiro.auth import KiroAuthManager
+from kiro.auth import KiroAuthManager, AuthType
+from kiro.account_manager import AccountManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
 from kiro.routes_openai import router as openai_router
@@ -606,6 +608,30 @@ Examples:
     )
     usage_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
+    accounts_parser = subparsers.add_parser(
+        "accounts",
+        help="Manage OAuth accounts",
+        description="Manage multiple OAuth accounts (list, enable, disable, remove)",
+    )
+    accounts_subparsers = accounts_parser.add_subparsers(dest="accounts_command")
+
+    accounts_subparsers.add_parser("list", help="List all accounts")
+
+    enable_parser = accounts_subparsers.add_parser(
+        "enable", help="Enable account by index or email"
+    )
+    enable_parser.add_argument("identifier", help="Account index or email")
+
+    disable_parser = accounts_subparsers.add_parser(
+        "disable", help="Disable account by index or email"
+    )
+    disable_parser.add_argument("identifier", help="Account index or email")
+
+    remove_parser = accounts_subparsers.add_parser(
+        "remove", help="Remove account by index or email"
+    )
+    remove_parser.add_argument("identifier", help="Account index or email")
+
     return parser.parse_args()
 
 
@@ -690,6 +716,48 @@ def print_startup_banner(host: str, port: int) -> None:
     print()
 
 
+async def fetch_user_email(access_token: str, region: str) -> str:
+    """
+    Fetch user email by calling getUsageLimits API.
+
+    Args:
+        access_token: Valid access token
+        region: AWS region
+
+    Returns:
+        User email address
+
+    Raises:
+        Exception: If API call fails or email not found
+    """
+    import uuid
+
+    url = f"https://q.{region}.amazonaws.com/getUsageLimits"
+    params = {
+        "isEmailRequired": "true",
+        "origin": "AI_EDITOR",
+        "resourceType": "AGENTIC_REQUEST",
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "x-amz-user-agent": "kiro-gateway",
+        "amz-sdk-invocation-id": str(uuid.uuid4()),
+        "amz-sdk-request": "attempt=1;max=1",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    email = data.get("userInfo", {}).get("email")
+    if not email:
+        raise Exception("Email not found in getUsageLimits response")
+
+    return email
+
+
 async def handle_login_command(args: argparse.Namespace) -> None:
     if gateway_credentials_exist() and not args.force:
         creds_path = get_gateway_credentials_path()
@@ -708,10 +776,21 @@ async def handle_login_command(args: argparse.Namespace) -> None:
         flow = DeviceAuthFlow(region, start_url=start_url)
         credentials = await flow.run_device_flow()
 
-        save_gateway_credentials(credentials)
+        # Fetch user email via getUsageLimits API
+        email = await fetch_user_email(credentials["accessToken"], region)
+        credentials["email"] = email
+        credentials["enabled"] = True
+        credentials["failureCount"] = 0
+
+        # Add or update credential
+        is_new = add_or_update_credential(credentials)
+
+        if is_new:
+            print(f"\n✓ Added new account: {email}")
+        else:
+            print(f"\n✓ Updated existing account: {email}")
 
         creds_path = get_gateway_credentials_path()
-        print("\n✓ Authentication successful!")
         print(f"  Credentials saved to: {creds_path}\n")
 
     except DeviceAuthError as e:
