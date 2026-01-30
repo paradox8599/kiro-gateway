@@ -574,7 +574,12 @@ def load_gateway_credentials() -> list:
         return []
 
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    if isinstance(data, dict):
+        return [data]
+
+    return data
 
 
 def add_or_update_credential(cred: dict) -> bool:

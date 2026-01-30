@@ -82,6 +82,8 @@ from kiro.config import (
     get_gateway_credentials_path,
     load_gateway_credentials,
     add_or_update_credential,
+    remove_credential,
+    update_credential_status,
 )
 from kiro.auth import KiroAuthManager, AuthType
 from kiro.account_manager import AccountManager
@@ -357,12 +359,24 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Shared HTTP client created with connection pooling")
 
-    # Create AuthManager
-    # Priority: OAuth creds (~/.kiro-gateway/) > SQLite DB > JSON file > environment variables
+    # Create AccountManager for multi-account support
+    # Priority: OAuth creds (~/.kiro-gateway/) > fallback to legacy single-account
+    credentials = load_gateway_credentials()
+    if credentials:
+        app.state.account_manager = AccountManager(credentials, region=REGION)
+        enabled_count = len(app.state.account_manager.get_enabled_accounts())
+        logger.info(
+            f"AccountManager initialized with {len(credentials)} account(s), {enabled_count} enabled"
+        )
+    else:
+        app.state.account_manager = None
+        logger.warning("No accounts configured. Run 'python main.py login' first.")
+
+    # Legacy auth_manager for backward compatibility (model loading, etc.)
+    # TODO: Remove once all routes use account_manager
     oauth_creds_file = None
     if gateway_credentials_exist():
         oauth_creds_file = str(get_gateway_credentials_path())
-        logger.info(f"Using OAuth credentials from {oauth_creds_file}")
 
     app.state.auth_manager = KiroAuthManager(
         refresh_token=REFRESH_TOKEN,
@@ -878,6 +892,108 @@ async def handle_usage_command(args: argparse.Namespace) -> None:
         print()
 
 
+def handle_accounts_command(args: argparse.Namespace) -> None:
+    if not gateway_credentials_exist():
+        print("\n❌ No accounts found. Run 'python main.py login' first.\n")
+        sys.exit(1)
+
+    credentials = load_gateway_credentials()
+    command = args.accounts_command or "list"
+
+    if command == "list":
+        enabled_count = sum(1 for c in credentials if c.get("enabled", True))
+        total_count = len(credentials)
+
+        print(f"\nKiro Accounts ({total_count} total, {enabled_count} enabled)\n")
+        print(f"{'#':<3}{'Email':<26}{'Status':<11}{'Failures':<10}{'Region'}")
+
+        for i, cred in enumerate(credentials):
+            email = cred.get("email", "unknown")
+            status = "enabled" if cred.get("enabled", True) else "disabled"
+            failures = cred.get("failureCount", 0)
+            region = cred.get("region", "us-east-1")
+            print(f"{i:<3}{email:<26}{status:<11}{failures:<10}{region}")
+
+        print()
+
+    elif command == "enable":
+        identifier = args.identifier
+
+        try:
+            index = int(identifier)
+            if 0 <= index < len(credentials):
+                update_credential_status(index, enabled=True, failure_count=0)
+                email = credentials[index].get("email", "unknown")
+                print(f"\n✓ Account enabled: {email}\n")
+            else:
+                print(
+                    f"\n❌ Invalid index: {index}. Valid range: 0-{len(credentials) - 1}\n"
+                )
+                sys.exit(1)
+        except ValueError:
+            found = False
+            for i, cred in enumerate(credentials):
+                if cred.get("email") == identifier:
+                    update_credential_status(i, enabled=True, failure_count=0)
+                    print(f"\n✓ Account enabled: {identifier}\n")
+                    found = True
+                    break
+            if not found:
+                print(f"\n❌ Account not found: {identifier}\n")
+                sys.exit(1)
+
+    elif command == "disable":
+        identifier = args.identifier
+
+        try:
+            index = int(identifier)
+            if 0 <= index < len(credentials):
+                failures = credentials[index].get("failureCount", 0)
+                update_credential_status(index, enabled=False, failure_count=failures)
+                email = credentials[index].get("email", "unknown")
+                print(f"\n✓ Account disabled: {email}\n")
+            else:
+                print(
+                    f"\n❌ Invalid index: {index}. Valid range: 0-{len(credentials) - 1}\n"
+                )
+                sys.exit(1)
+        except ValueError:
+            found = False
+            for i, cred in enumerate(credentials):
+                if cred.get("email") == identifier:
+                    failures = cred.get("failureCount", 0)
+                    update_credential_status(i, enabled=False, failure_count=failures)
+                    print(f"\n✓ Account disabled: {identifier}\n")
+                    found = True
+                    break
+            if not found:
+                print(f"\n❌ Account not found: {identifier}\n")
+                sys.exit(1)
+
+    elif command == "remove":
+        identifier = args.identifier
+
+        try:
+            index = int(identifier)
+            if 0 <= index < len(credentials):
+                email = credentials[index].get("email", "unknown")
+                remove_credential(index)
+                print(f"\n✓ Account removed: {email}\n")
+            else:
+                print(
+                    f"\n❌ Invalid index: {index}. Valid range: 0-{len(credentials) - 1}\n"
+                )
+                sys.exit(1)
+        except ValueError:
+            found = any(c.get("email") == identifier for c in credentials)
+            if found:
+                remove_credential(identifier)
+                print(f"\n✓ Account removed: {identifier}\n")
+            else:
+                print(f"\n❌ Account not found: {identifier}\n")
+                sys.exit(1)
+
+
 # --- Entry Point ---
 if __name__ == "__main__":
     import uvicorn
@@ -888,6 +1004,8 @@ if __name__ == "__main__":
         asyncio.run(handle_login_command(args))
     elif args.command == "usage":
         asyncio.run(handle_usage_command(args))
+    elif args.command == "accounts":
+        handle_accounts_command(args)
     else:
         validate_configuration()
         _warn_timeout_configuration()
