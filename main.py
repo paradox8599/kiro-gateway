@@ -771,36 +771,32 @@ async def handle_usage_command(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(data, indent=2))
     else:
-        print("\n" + "=" * 50)
-        print("  KIRO ACCOUNT USAGE")
-        print("=" * 50)
-
         sub_info = data.get("subscriptionInfo", {})
-        print(f"\nSubscription: {sub_info.get('subscriptionTitle', 'Unknown')}")
-        print(f"Type: {sub_info.get('type', 'Unknown')}")
-
         user_info = data.get("userInfo", {})
-        if user_info.get("email"):
-            print(f"Email: {user_info.get('email')}")
 
+        sub_title = sub_info.get("subscriptionTitle", "Unknown")
+        sub_type = sub_info.get("type", "Unknown")
+        print(f"\nKiro Usage - {sub_title} ({sub_type})")
+
+        email = user_info.get("email", "N/A")
         reset_ts = data.get("nextDateReset", 0)
         if reset_ts:
             reset_date = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d")
-            print(f"Resets: {reset_date} ({data.get('daysUntilReset', 0)} days)")
+            days = data.get("daysUntilReset", 0)
+            print(f"Email: {email} | Resets: {reset_date} ({days} days)")
+        else:
+            print(f"Email: {email}")
 
-        print("\n" + "-" * 50)
-        print("  USAGE BREAKDOWN")
-        print("-" * 50)
+        print()
 
         for item in data.get("usageBreakdownList", []):
             name = item.get("displayName", item.get("resourceType", "Unknown"))
             current = item.get("currentUsage", 0)
             limit = item.get("usageLimit", 0)
             pct = (current / limit * 100) if limit > 0 else 0
-            print(f"\n{name}:")
-            print(f"  {current} / {limit} ({pct:.1f}%)")
+            print(f"  {name:<24} {current:>4} / {limit:<6} ({pct:>5.1f}%)")
 
-        print("\n" + "=" * 50 + "\n")
+        print()
 
 
 # --- Entry Point ---
