@@ -309,6 +309,58 @@ When the server starts, credentials are checked in this order:
 
 The first valid credential source found is used.
 
+### Checking Usage
+
+Check your Kiro account credit usage and limits.
+
+#### CLI
+
+```bash
+# Display usage summary
+python main.py usage
+
+# Output as JSON
+python main.py usage --json
+
+# Use specific region
+python main.py usage --region eu-west-1
+```
+
+**Example output:**
+```
+Kiro Usage - Amazon Q Developer Free Tier (FREE_TIER)
+Email: user@example.com | Resets: 2025-02-13 (15 days)
+
+  Agentic coding          5 / 10     (50.0%)
+  Code suggestions      100 / 1000   (10.0%)
+```
+
+#### API
+
+```bash
+curl -H "Authorization: Bearer YOUR_PROXY_KEY" http://localhost:8000/usage
+```
+
+**Response:**
+```json
+{
+  "days_until_reset": 15,
+  "next_date_reset": 1739404800,
+  "subscription_info": {
+    "subscription_title": "Amazon Q Developer Free Tier",
+    "type": "FREE_TIER"
+  },
+  "usage_breakdown": [
+    {
+      "resource_type": "AGENTIC_REQUEST",
+      "display_name": "Agentic coding",
+      "current_usage": 5,
+      "usage_limit": 10
+    }
+  ]
+}
+```
+
 ---
 
 ## 🐳 Docker Deployment
