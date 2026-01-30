@@ -325,7 +325,11 @@ async def messages(
     # Create HTTP client with retry logic
     # For streaming: use per-request client to avoid CLOSE_WAIT leak on VPN disconnect (issue #54)
     # For non-streaming: use shared client for connection pooling
-    url = f"{account['api_host']}/generateAssistantResponse"
+    region = account.get("region", "us-east-1")
+    from kiro.config import get_kiro_api_host
+
+    api_host = get_kiro_api_host(region)
+    url = f"{api_host}/generateAssistantResponse"
     logger.debug(f"Kiro API URL: {url}")
 
     max_account_retries = len(account_manager.get_enabled_accounts())
