@@ -1,13 +1,12 @@
 # Kiro Gateway - Docker Image
-# Optimized single-stage build
+# Optimized single-stage build with uv
 
-FROM python:3.10-slim
+FROM python:3.14-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    UV_SYSTEM_PYTHON=1
 
 # Create non-root user for security
 RUN groupadd -r kiro && useradd -r -g kiro kiro
@@ -15,9 +14,13 @@ RUN groupadd -r kiro && useradd -r -g kiro kiro
 # Set working directory
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Copy dependency files first (better layer caching)
+COPY pyproject.toml uv.lock ./
+
+RUN uv pip install --system -r pyproject.toml
 
 # Copy application code
 COPY --chown=kiro:kiro . .
@@ -32,7 +35,6 @@ USER kiro
 EXPOSE 8000
 
 # Health check
-# Using httpx (our main HTTP library) instead of requests
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=5)"
 
