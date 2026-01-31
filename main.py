@@ -821,12 +821,6 @@ async def fetch_user_email(access_token: str, region: str) -> str:
 
 
 async def handle_login_command(args: argparse.Namespace) -> None:
-    if gateway_credentials_exist() and not args.force:
-        creds_path = get_gateway_credentials_path()
-        print(f"\n❌ Credentials already exist at: {creds_path}")
-        print("   Use --force to overwrite existing credentials\n")
-        sys.exit(1)
-
     region = args.region or REGION or "us-east-1"
     start_url = args.start_url if hasattr(args, "start_url") else None
 
