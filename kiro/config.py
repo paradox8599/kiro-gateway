@@ -519,12 +519,38 @@ def get_gateway_credentials_path() -> Path:
 
 def gateway_credentials_exist() -> bool:
     """
-    Check if kiro-gateway credentials file exists.
-
-    Returns:
-        True if credentials file exists, False otherwise
+    Check if credentials file exists and contains at least one credential.
     """
-    return get_gateway_credentials_path().exists()
+    import json
+
+    path = get_gateway_credentials_path()
+    if not path.exists():
+        return False
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list) and len(data) > 0:
+            return True
+        if isinstance(data, dict) and data:
+            return True
+        return False
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+def ensure_gateway_credentials_file() -> None:
+    """
+    Ensure ~/.kiro-gateway/credentials.json exists, creating empty file if needed.
+    """
+    path = get_gateway_credentials_path()
+    parent_dir = path.parent
+
+    if not parent_dir.exists():
+        os.makedirs(parent_dir, mode=0o700, exist_ok=True)
+
+    if not path.exists():
+        save_gateway_credentials([])
 
 
 def save_gateway_credentials(creds: list) -> None:
