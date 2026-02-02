@@ -8,9 +8,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_SYSTEM_PYTHON=1
 
-# Create non-root user for security
-RUN groupadd -r kiro && useradd -r -g kiro kiro
-
 # Set working directory
 WORKDIR /app
 
@@ -23,13 +20,13 @@ COPY pyproject.toml uv.lock ./
 RUN uv pip install --system -r pyproject.toml
 
 # Copy application code
-COPY --chown=kiro:kiro . .
+COPY . .
 
-# Create directory for debug logs with proper permissions
-RUN mkdir -p debug_logs && chown -R kiro:kiro debug_logs
+# Create directory for debug logs
+RUN mkdir -p debug_logs
 
-# Switch to non-root user
-USER kiro
+# Create credentials directory
+RUN mkdir -p /root/.kiro-gateway
 
 # Expose port
 EXPOSE 8000
