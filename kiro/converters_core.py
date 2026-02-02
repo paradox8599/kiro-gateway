@@ -36,11 +36,31 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
+import re
+
 from kiro.config import (
     TOOL_DESCRIPTION_MAX_LENGTH,
     FAKE_REASONING_ENABLED,
     FAKE_REASONING_MAX_TOKENS,
 )
+
+SURROGATE_PATTERN = re.compile(r"[\ud800-\udfff]")
+
+
+def _sanitize_surrogates(text: str) -> str:
+    """Remove unpaired UTF-16 surrogates (U+D800-U+DFFF) that cannot be encoded to UTF-8."""
+    return SURROGATE_PATTERN.sub("", text)
+
+
+def sanitize_payload(obj: Any) -> Any:
+    """Recursively sanitize all strings in a payload to remove unpaired surrogates."""
+    if isinstance(obj, str):
+        return _sanitize_surrogates(obj)
+    elif isinstance(obj, dict):
+        return {k: sanitize_payload(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_payload(item) for item in obj]
+    return obj
 
 
 # ==================================================================================================
@@ -1401,4 +1421,6 @@ def build_kiro_payload(
     if profile_arn:
         payload["profileArn"] = profile_arn
 
-    return KiroPayloadResult(payload=payload, tool_documentation=tool_documentation)
+    return KiroPayloadResult(
+        payload=sanitize_payload(payload), tool_documentation=tool_documentation
+    )
