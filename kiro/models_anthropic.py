@@ -90,11 +90,14 @@ class ToolResultContentBlock(BaseModel):
     Tool result content block in Anthropic format.
 
     Represents the result of a tool call, sent by the user.
+    Tool results can contain text, images, or a mix of both.
     """
 
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
-    content: Optional[Union[str, List["TextContentBlock"]]] = None
+    content: Optional[
+        Union[str, List[Union["TextContentBlock", "ImageContentBlock"]]]
+    ] = None
     is_error: Optional[bool] = None
 
 

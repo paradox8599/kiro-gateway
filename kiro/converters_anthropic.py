@@ -152,13 +152,52 @@ def extract_tool_results_from_anthropic_content(content: Any) -> List[Dict[str, 
 
             tool_results.append(
                 {
-                    "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": result_content or "(empty result)",
                 }
             )
 
     return tool_results
+
+
+def extract_images_from_tool_results(content: Any) -> List[Dict[str, Any]]:
+    """
+    Extracts images from tool_result content blocks.
+
+    Tool results in Anthropic format can contain images (e.g., screenshots from browser tools).
+    This function extracts those images so they can be passed to the model.
+
+    Args:
+        content: Anthropic message content (list of content blocks)
+
+    Returns:
+        List of images in unified format: [{"media_type": "image/jpeg", "data": "base64..."}]
+    """
+    images: List[Dict[str, Any]] = []
+
+    if not isinstance(content, list):
+        return images
+
+    for block in content:
+        block_type = None
+        result_content = None
+
+        if isinstance(block, dict):
+            block_type = block.get("type")
+            result_content = block.get("content")
+        elif hasattr(block, "type"):
+            block_type = block.type
+            result_content = getattr(block, "content", None)
+
+        if block_type == "tool_result" and isinstance(result_content, list):
+            # Extract images from the tool_result's content
+            tool_result_images = extract_images_from_content(result_content)
+            images.extend(tool_result_images)
+
+    if images:
+        logger.debug(f"Extracted {len(images)} image(s) from tool_result content")
+
+    return images
 
 
 def extract_tool_uses_from_anthropic_content(content: Any) -> List[Dict[str, Any]]:
@@ -259,8 +298,18 @@ def convert_anthropic_messages(
             if tool_results:
                 total_tool_results += len(tool_results)
 
-            # Extract images from user messages
+            # Extract images from user messages (both top-level and inside tool_results)
             images = extract_images_from_content(content)
+
+            # Also extract images from inside tool_result content blocks
+            # (e.g., screenshots returned by browser MCP tools)
+            tool_result_images = extract_images_from_tool_results(content)
+            if tool_result_images:
+                if images:
+                    images.extend(tool_result_images)
+                else:
+                    images = tool_result_images
+
             if images:
                 total_images += len(images)
 

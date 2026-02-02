@@ -20,6 +20,7 @@ from kiro.converters_core import (
     extract_images_from_content,
     convert_images_to_kiro_format,
     merge_adjacent_messages,
+    ensure_first_message_is_user,
     ensure_assistant_before_tool_results,
     strip_all_tool_content,
     build_kiro_history,
@@ -1264,6 +1265,196 @@ class TestMergeAdjacentMessages:
         assert len(result) == 1
         assert result[0].tool_results is not None
         assert len(result[0].tool_results) == 2
+
+
+# ==================================================================================================
+# Tests for ensure_first_message_is_user
+# ==================================================================================================
+
+class TestEnsureFirstMessageIsUser:
+    """
+    Tests for ensure_first_message_is_user function.
+    
+    This function ensures that conversations start with a user message, as required by Kiro API.
+    If the first message is from assistant (or any non-user role), a minimal synthetic user
+    message is prepended. This fixes issue #60 where conversations starting with assistant
+    messages cause "Improperly formed request" errors.
+    """
+    
+    def test_preserves_messages_starting_with_user(self):
+        """
+        What it does: Verifies that messages starting with user are unchanged.
+        Purpose: Ensure correct conversations pass through unmodified.
+        """
+        print("Setup: Messages starting with user...")
+        messages = [
+            UnifiedMessage(role="user", content="Hello"),
+            UnifiedMessage(role="assistant", content="Hi there")
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print(f"Comparing length: Expected 2, Got {len(result)}")
+        assert len(result) == 2
+        assert result[0].role == "user"
+        assert result[0].content == "Hello"
+        assert result[1].role == "assistant"
+    
+    def test_prepends_synthetic_user_when_first_is_assistant(self):
+        """
+        What it does: Verifies synthetic user message is prepended when first message is assistant.
+        Purpose: Fix issue #60 - conversations starting with assistant cause 400 errors.
+        """
+        print("Setup: Messages starting with assistant...")
+        messages = [
+            UnifiedMessage(role="assistant", content="Hello! I'm here to help."),
+            UnifiedMessage(role="user", content="Hi, can you help me?")
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print(f"Comparing length: Expected 3 (synthetic + 2 original), Got {len(result)}")
+        assert len(result) == 3
+        
+        print("Checking first message is synthetic user...")
+        assert result[0].role == "user"
+        assert result[0].content == "."
+        
+        print("Checking original messages are preserved...")
+        assert result[1].role == "assistant"
+        assert result[1].content == "Hello! I'm here to help."
+        assert result[2].role == "user"
+        assert result[2].content == "Hi, can you help me?"
+    
+    def test_handles_empty_list(self):
+        """
+        What it does: Verifies empty list handling.
+        Purpose: Ensure empty input returns empty output without errors.
+        """
+        print("Setup: Empty list...")
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user([])
+        
+        print(f"Comparing result: Expected [], Got {result}")
+        assert result == []
+    
+    def test_handles_single_assistant_message(self):
+        """
+        What it does: Verifies single assistant message gets synthetic user prepended.
+        Purpose: Handle edge case of conversation with only assistant message.
+        """
+        print("Setup: Single assistant message...")
+        messages = [
+            UnifiedMessage(role="assistant", content="Previous response to continue...")
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print(f"Comparing length: Expected 2 (synthetic + original), Got {len(result)}")
+        assert len(result) == 2
+        assert result[0].role == "user"
+        assert result[0].content == "."
+        assert result[1].role == "assistant"
+    
+    def test_handles_assistant_user_assistant_sequence(self):
+        """
+        What it does: Verifies synthetic user is prepended for assistant-first sequences.
+        Purpose: Ensure complex conversation structures are handled correctly.
+        """
+        print("Setup: Assistant → User → Assistant sequence...")
+        messages = [
+            UnifiedMessage(role="assistant", content="First response"),
+            UnifiedMessage(role="user", content="Question"),
+            UnifiedMessage(role="assistant", content="Second response")
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print(f"Comparing length: Expected 4 (synthetic + 3 original), Got {len(result)}")
+        assert len(result) == 4
+        assert result[0].role == "user"
+        assert result[0].content == "."
+        assert result[1].role == "assistant"
+        assert result[2].role == "user"
+        assert result[3].role == "assistant"
+    
+    def test_preserves_tool_calls_in_assistant_message(self):
+        """
+        What it does: Verifies tool_calls are preserved when prepending synthetic user.
+        Purpose: Ensure tool calling functionality is not broken by the fix.
+        """
+        print("Setup: Assistant message with tool_calls...")
+        messages = [
+            UnifiedMessage(
+                role="assistant",
+                content="Let me check that for you.",
+                tool_calls=[{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"location": "Moscow"}'}
+                }]
+            )
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print("Checking synthetic user was prepended...")
+        assert len(result) == 2
+        assert result[0].role == "user"
+        assert result[0].content == "."
+        
+        print("Checking tool_calls are preserved...")
+        assert result[1].role == "assistant"
+        assert result[1].tool_calls is not None
+        assert len(result[1].tool_calls) == 1
+        assert result[1].tool_calls[0]["id"] == "call_123"
+    
+    def test_preserves_images_in_messages(self):
+        """
+        What it does: Verifies images are preserved when prepending synthetic user.
+        Purpose: Ensure multimodal functionality is not broken by the fix.
+        """
+        print("Setup: Assistant message followed by user with images...")
+        messages = [
+            UnifiedMessage(role="assistant", content="What's in this image?"),
+            UnifiedMessage(
+                role="user",
+                content="Here it is",
+                images=[{"media_type": "image/jpeg", "data": "base64data"}]
+            )
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print("Checking images are preserved...")
+        assert len(result) == 3
+        assert result[0].role == "user"  # Synthetic
+        assert result[2].images is not None
+        assert len(result[2].images) == 1
+    
+    def test_uses_minimal_content_for_synthetic_message(self):
+        """
+        What it does: Verifies synthetic message uses minimal content (".").
+        Purpose: Ensure minimal token usage and avoid disrupting conversation context.
+        """
+        print("Setup: Assistant-first conversation...")
+        messages = [
+            UnifiedMessage(role="assistant", content="Hello")
+        ]
+        
+        print("Action: Ensuring first message is user...")
+        result = ensure_first_message_is_user(messages)
+        
+        print("Checking synthetic message content...")
+        assert result[0].content == "."
+        print("✓ Synthetic message uses minimal content (matches LiteLLM behavior)")
 
 
 # ==================================================================================================
@@ -4133,6 +4324,173 @@ class TestStripAllToolContent:
         print("Checking that result content is preserved...")
         assert "def hello():" in result[0].content
         assert had_content is True
+
+
+# ==================================================================================================
+# Tests for strip_all_tool_content with images preservation (Issue #57 follow-up)
+# ==================================================================================================
+
+class TestStripAllToolContentPreservesImages:
+    """Tests that strip_all_tool_content preserves images field (Issue #57 follow-up)."""
+    
+    def test_preserves_images_when_stripping_tool_results(self):
+        """
+        What it does: Verifies images are preserved when tool_results are stripped.
+        Purpose: Ensure images from MCP tool messages aren't lost (critical bug fix).
+        """
+        print("Setup: Message with tool_results and images...")
+        messages = [
+            UnifiedMessage(
+                role="user",
+                content="Screenshot result",
+                tool_results=[
+                    {"type": "tool_result", "tool_use_id": "call_123", "content": "Done"}
+                ],
+                images=[
+                    {"media_type": "image/png", "data": "screenshot_data"}
+                ]
+            )
+        ]
+        
+        print("Action: Stripping tool content...")
+        result, had_tools = strip_all_tool_content(messages)
+        
+        print(f"Result: {result}")
+        print(f"Images preserved: {result[0].images}")
+        
+        assert had_tools is True
+        assert result[0].tool_results is None  # Stripped
+        assert result[0].images is not None  # PRESERVED
+        assert len(result[0].images) == 1
+        assert result[0].images[0]["data"] == "screenshot_data"
+    
+    def test_preserves_images_when_stripping_tool_calls(self):
+        """
+        What it does: Verifies images are preserved when tool_calls are stripped.
+        Purpose: Ensure images aren't lost when assistant messages have tool_calls.
+        """
+        print("Setup: Message with tool_calls and images...")
+        messages = [
+            UnifiedMessage(
+                role="assistant",
+                content="Using tool",
+                tool_calls=[
+                    {"id": "call_456", "type": "function", "function": {"name": "test", "arguments": "{}"}}
+                ],
+                images=[
+                    {"media_type": "image/jpeg", "data": "image_data"}
+                ]
+            )
+        ]
+        
+        print("Action: Stripping tool content...")
+        result, had_tools = strip_all_tool_content(messages)
+        
+        print(f"Result: {result}")
+        print(f"Images preserved: {result[0].images}")
+        
+        assert had_tools is True
+        assert result[0].tool_calls is None  # Stripped
+        assert result[0].images is not None  # PRESERVED
+        assert len(result[0].images) == 1
+        assert result[0].images[0]["data"] == "image_data"
+    
+    def test_preserves_images_when_stripping_both_tool_calls_and_results(self):
+        """
+        What it does: Verifies images are preserved when both tool_calls and tool_results are stripped.
+        Purpose: Ensure images survive complete tool content removal.
+        """
+        print("Setup: Message with both tool_calls, tool_results and images...")
+        messages = [
+            UnifiedMessage(
+                role="user",
+                content="Complex message",
+                tool_calls=[
+                    {"id": "call_1", "type": "function", "function": {"name": "tool1", "arguments": "{}"}}
+                ],
+                tool_results=[
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "Result"}
+                ],
+                images=[
+                    {"media_type": "image/png", "data": "complex_image"}
+                ]
+            )
+        ]
+        
+        print("Action: Stripping tool content...")
+        result, had_tools = strip_all_tool_content(messages)
+        
+        print(f"Result: {result}")
+        print(f"Images preserved: {result[0].images}")
+        
+        assert had_tools is True
+        assert result[0].tool_calls is None  # Stripped
+        assert result[0].tool_results is None  # Stripped
+        assert result[0].images is not None  # PRESERVED
+        assert len(result[0].images) == 1
+        assert result[0].images[0]["data"] == "complex_image"
+    
+    def test_preserves_none_images_when_stripping(self):
+        """
+        What it does: Verifies None images stay None when tool content is stripped.
+        Purpose: Ensure we don't create spurious images field.
+        """
+        print("Setup: Message with tool_results but no images...")
+        messages = [
+            UnifiedMessage(
+                role="user",
+                content="Text only",
+                tool_results=[
+                    {"type": "tool_result", "tool_use_id": "call_789", "content": "Done"}
+                ],
+                images=None
+            )
+        ]
+        
+        print("Action: Stripping tool content...")
+        result, had_tools = strip_all_tool_content(messages)
+        
+        print(f"Result: {result}")
+        print(f"Images field: {result[0].images}")
+        
+        assert had_tools is True
+        assert result[0].tool_results is None  # Stripped
+        assert result[0].images is None  # Still None (not created)
+    
+    def test_preserves_multiple_images_when_stripping(self):
+        """
+        What it does: Verifies multiple images are all preserved when stripping.
+        Purpose: Ensure all images survive, not just the first one.
+        """
+        print("Setup: Message with tool_results and multiple images...")
+        messages = [
+            UnifiedMessage(
+                role="user",
+                content="Multiple screenshots",
+                tool_results=[
+                    {"type": "tool_result", "tool_use_id": "call_multi", "content": "Done"}
+                ],
+                images=[
+                    {"media_type": "image/png", "data": "image1"},
+                    {"media_type": "image/jpeg", "data": "image2"},
+                    {"media_type": "image/webp", "data": "image3"}
+                ]
+            )
+        ]
+        
+        print("Action: Stripping tool content...")
+        result, had_tools = strip_all_tool_content(messages)
+        
+        print(f"Result: {result}")
+        print(f"Images count: {len(result[0].images)}")
+        
+        assert had_tools is True
+        assert result[0].tool_results is None  # Stripped
+        assert result[0].images is not None  # PRESERVED
+        assert len(result[0].images) == 3
+        assert result[0].images[0]["data"] == "image1"
+        assert result[0].images[1]["data"] == "image2"
+        assert result[0].images[2]["data"] == "image3"
 
 
 # ==================================================================================================
