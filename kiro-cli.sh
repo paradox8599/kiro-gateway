@@ -1,38 +1,42 @@
 #!/bin/bash
 
 BASE_URL="${KIRO_GATEWAY_URL:-http://localhost:8000}"
+API_KEY="${KIRO_GATEWAY_API_KEY:-}"
 
-usage() {
+help_text() {
     echo "Usage: $0 <command> [args]"
     echo ""
     echo "Commands:"
     echo "  login [start_url]    Start device auth flow (optional: organization SSO URL)"
     echo "  status <session_id>  Check login status"
     echo "  cancel <session_id>  Cancel login session"
+    echo "  usage                Show account usage"
     echo ""
     echo "Examples:"
     echo "  $0 login                                           # Builder ID login"
     echo "  $0 login https://my-company.awsapps.com/start      # Organization SSO"
     echo "  $0 status abc123-uuid"
-    echo "  $0 cancel abc123-uuid"
+    echo "  $0 usage"
     echo ""
     echo "Environment:"
-    echo "  KIRO_GATEWAY_URL    Base URL (default: http://localhost:8000)"
+    echo "  KIRO_GATEWAY_URL      Base URL (default: http://localhost:8000)"
+    echo "  KIRO_GATEWAY_API_KEY  API key for authenticated endpoints"
     exit 1
 }
 
 interactive() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Kiro Gateway Authentication"
+    echo "  Kiro Gateway CLI"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "  1) Builder ID (personal)"
-    echo "  2) Organization SSO"
-    echo "  3) Check status"
-    echo "  4) Cancel session"
-    echo "  5) Exit"
+    echo "  1) Builder ID login (personal)"
+    echo "  2) Organization SSO login"
+    echo "  3) Check login status"
+    echo "  4) Cancel login session"
+    echo "  5) Show usage"
+    echo "  6) Exit"
     echo ""
-    read -p "  Select option [1-5]: " choice
+    read -p "  Select option [1-6]: " choice
     echo ""
     
     case "$choice" in
@@ -51,13 +55,16 @@ interactive() {
             ;;
         3)
             read -p "  Enter session ID: " session_id
-            status "$session_id"
+            check_status "$session_id"
             ;;
         4)
             read -p "  Enter session ID: " session_id
             cancel "$session_id"
             ;;
         5)
+            show_usage
+            ;;
+        6)
             exit 0
             ;;
         *)
@@ -143,12 +150,12 @@ poll_status() {
     done
 }
 
-status() {
+check_status() {
     local session_id="$1"
     
     if [ -z "$session_id" ]; then
         echo "Error: session_id required"
-        usage
+        help_text
     fi
     
     response=$(curl -s "$BASE_URL/auth/login/status/$session_id")
@@ -179,11 +186,41 @@ cancel() {
     
     if [ -z "$session_id" ]; then
         echo "Error: session_id required"
-        usage
+        help_text
     fi
     
     curl -s -X DELETE "$BASE_URL/auth/login/$session_id"
     echo "Session cancelled"
+}
+
+show_usage() {
+    if [ -z "$API_KEY" ]; then
+        echo "Error: KIRO_GATEWAY_API_KEY required"
+        echo "  export KIRO_GATEWAY_API_KEY=your-api-key"
+        exit 1
+    fi
+    
+    response=$(curl -s -H "Authorization: Bearer $API_KEY" "$BASE_URL/usage")
+    
+    if echo "$response" | grep -q '"detail"'; then
+        echo "Error: $response"
+        exit 1
+    fi
+    
+    if ! command -v jq &> /dev/null; then
+        echo "$response"
+        exit 0
+    fi
+    
+    echo "$response" | jq -r '
+.accounts[] | 
+"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Account: \(.email)
+Status:  \(if .enabled then "✓ Enabled" else "✗ Disabled" end)\(if .failure_count > 0 then " (failures: \(.failure_count))" else "" end)
+Plan:    \(.usage.subscription_info.subscription_title // "N/A")
+Reset:   \(.usage.days_until_reset // "N/A") days
+\(if .error then "Error:   \(.error)" else (.usage.usage_breakdown | map("  • \(.display_name): \(.current_usage)/\(.usage_limit)") | join("\n")) end)"
+'
 }
 
 if [ -z "$1" ]; then
@@ -196,12 +233,15 @@ case "$1" in
         login "$2"
         ;;
     status)
-        status "$2"
+        check_status "$2"
         ;;
     cancel)
         cancel "$2"
         ;;
+    usage)
+        show_usage
+        ;;
     *)
-        usage
+        help_text
         ;;
 esac
