@@ -1181,7 +1181,7 @@ def ensure_first_message_is_user(
         >>> result[0].role
         'user'
         >>> result[0].content
-        '.'
+        '(empty)'
     """
     if not messages:
         return messages
@@ -1193,12 +1193,127 @@ def ensure_first_message_is_user(
         )
 
         # Create minimal synthetic user message (matches LiteLLM behavior)
-        # Using "." as minimal valid content to avoid disrupting conversation context
-        synthetic_user = UnifiedMessage(role="user", content=".")
-
+        # Using "(empty)" as minimal valid content to avoid disrupting conversation context
+        synthetic_user = UnifiedMessage(
+            role="user",
+            content="(empty)"
+        )
+        
         return [synthetic_user] + messages
 
     return messages
+
+
+def normalize_message_roles(messages: List[UnifiedMessage]) -> List[UnifiedMessage]:
+    """
+    Normalizes unknown message roles to 'user'.
+    
+    Kiro API only supports 'user' and 'assistant' roles in history.
+    Any other role (e.g., 'developer', 'system') is converted to 'user'
+    to maintain compatibility.
+    
+    This normalization MUST happen before ensure_alternating_roles()
+    to ensure consecutive messages with unknown roles are properly detected
+    and synthetic assistant messages are inserted between them.
+    
+    Args:
+        messages: List of messages in unified format
+    
+    Returns:
+        List of messages with normalized roles
+    
+    Example:
+        >>> messages = [
+        ...     UnifiedMessage(role="developer", content="Context 1"),
+        ...     UnifiedMessage(role="developer", content="Context 2"),
+        ...     UnifiedMessage(role="user", content="Question")
+        ... ]
+        >>> result = normalize_message_roles(messages)
+        >>> [msg.role for msg in result]
+        ['user', 'user', 'user']
+    """
+    if not messages:
+        return messages
+    
+    normalized = []
+    converted_count = 0
+    
+    for msg in messages:
+        if msg.role not in ("user", "assistant"):
+            logger.debug(f"Normalizing role '{msg.role}' to 'user'")
+            normalized_msg = UnifiedMessage(
+                role="user",
+                content=msg.content,
+                tool_calls=msg.tool_calls,
+                tool_results=msg.tool_results,
+                images=msg.images
+            )
+            normalized.append(normalized_msg)
+            converted_count += 1
+        else:
+            normalized.append(msg)
+    
+    if converted_count > 0:
+        logger.debug(f"Normalized {converted_count} message(s) with unknown roles to 'user'")
+    
+    return normalized
+
+
+def ensure_alternating_roles(messages: List[UnifiedMessage]) -> List[UnifiedMessage]:
+    """
+    Ensures alternating user/assistant roles by inserting synthetic assistant messages.
+    
+    Kiro API requires alternating userInputMessage and assistantResponseMessage.
+    When consecutive user messages are detected, synthetic assistant messages
+    with "(empty)" placeholder are inserted between them to maintain alternation.
+    
+    This fixes multiple unknown roles (converted to user)
+    create consecutive userInputMessage entries that violate Kiro API requirements.
+    
+    Args:
+        messages: List of messages in unified format
+    
+    Returns:
+        List of messages with synthetic assistant messages inserted where needed
+    
+    Example:
+        >>> messages = [
+        ...     UnifiedMessage(role="user", content="First"),
+        ...     UnifiedMessage(role="user", content="Second"),
+        ...     UnifiedMessage(role="user", content="Third")
+        ... ]
+        >>> result = ensure_alternating_roles(messages)
+        >>> len(result)
+        5  # 3 user + 2 synthetic assistant
+        >>> result[1].role
+        'assistant'
+        >>> result[1].content
+        '(empty)'
+    """
+    if not messages or len(messages) < 2:
+        return messages
+    
+    result = [messages[0]]
+    synthetic_count = 0
+    
+    for msg in messages[1:]:
+        prev_role = result[-1].role
+        
+        # If both current and previous are user → insert synthetic assistant
+        if msg.role == "user" and prev_role == "user":
+            synthetic_assistant = UnifiedMessage(
+                role="assistant",
+                content="(empty)"  # Consistent with build_kiro_history() placeholder
+            )
+            result.append(synthetic_assistant)
+            synthetic_count += 1
+        
+        result.append(msg)
+    
+    if synthetic_count > 0:
+        logger.debug(f"Inserted {synthetic_count} synthetic assistant message(s) to ensure alternation")
+    
+    return result
 
 
 # ==================================================================================================
@@ -1214,9 +1329,12 @@ def build_kiro_history(
 
     Kiro API expects alternating userInputMessage and assistantResponseMessage.
     This function converts unified format to Kiro format.
-
+    
+    All messages should have 'user' or 'assistant' roles at this point,
+    as unknown roles are normalized earlier in the pipeline by normalize_message_roles().
+    
     Args:
-        messages: List of messages in unified format
+        messages: List of messages in unified format (with normalized roles)
         model_id: Internal Kiro model ID
 
     Returns:
@@ -1375,7 +1493,16 @@ def build_kiro_payload(
 
     # Ensure first message is from user (Kiro API requirement, fixes issue #60)
     merged_messages = ensure_first_message_is_user(merged_messages)
-
+    
+    # Normalize unknown roles to 'user' (fixes issue #64)
+    # This must happen BEFORE ensure_alternating_roles() so that consecutive
+    # messages with unknown roles (e.g., 'developer') are properly detected
+    merged_messages = normalize_message_roles(merged_messages)
+    
+    # Ensure alternating user/assistant roles (fixes issue #64)
+    # Insert synthetic assistant messages between consecutive user messages
+    merged_messages = ensure_alternating_roles(merged_messages)
+    
     if not merged_messages:
         raise ValueError("No messages to send")
 

@@ -10,7 +10,7 @@ Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 
-_Use Claude models from Kiro with Claude Code, OpenCode, Cursor, Cline, Roo Code, Kilo Code, Aider, Obsidian, OpenAI SDK, LangChain, Continue and other OpenAI or Anthropic compatible tools_
+*Use Claude models from Kiro with Claude Code, OpenCode, Codex app, Cursor, Cline, Roo Code, Kilo Code, Obsidian, OpenAI SDK, LangChain, Continue and other OpenAI or Anthropic compatible tools*
 
 [Models](#-supported-models) • [Features](#-features) • [Quick Start](#-quick-start) • [Configuration](#%EF%B8%8F-configuration)
 

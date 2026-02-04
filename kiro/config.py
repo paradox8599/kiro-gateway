@@ -482,7 +482,7 @@ FAKE_REASONING_INITIAL_BUFFER_SIZE: int = int(
 # Application Version
 # ==================================================================================================
 
-APP_VERSION: str = "2.2"
+APP_VERSION: str = "2.3"
 APP_TITLE: str = "Kiro Gateway"
 APP_DESCRIPTION: str = "Proxy gateway for Kiro API (Amazon Q Developer / AWS CodeWhisperer). OpenAI and Anthropic compatible. Made by @jwadow"
 
