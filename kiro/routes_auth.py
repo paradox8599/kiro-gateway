@@ -31,7 +31,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Request
 from pydantic import BaseModel
 from loguru import logger
 
@@ -94,6 +94,7 @@ async def _poll_for_token_background(
     device_code: str,
     interval: int,
     expires_in: int,
+    app: Any,
 ) -> None:
     """
     Background task to poll for token after user completes authorization.
@@ -109,6 +110,7 @@ async def _poll_for_token_background(
         device_code: Device code from authorization request
         interval: Polling interval in seconds
         expires_in: Seconds until device code expires
+        app: FastAPI application instance for AccountManager access
     """
     try:
         logger.info(f"[{session_id[:8]}] Starting token polling...")
@@ -145,6 +147,17 @@ async def _poll_for_token_background(
 
         add_or_update_credential(credentials)
         logger.info(f"[{session_id[:8]}] Credentials saved successfully")
+
+        if hasattr(app.state, "account_manager") and app.state.account_manager:
+            app.state.account_manager.reload_credentials()
+            logger.info(f"[{session_id[:8]}] AccountManager reloaded with new account")
+        elif hasattr(app.state, "account_manager"):
+            from kiro.account_manager import AccountManager
+
+            app.state.account_manager = AccountManager([credentials], region=region)
+            logger.info(
+                f"[{session_id[:8]}] AccountManager initialized with first account"
+            )
 
         if session_id in _auth_sessions:
             _auth_sessions[session_id]["status"] = "complete"
@@ -186,6 +199,7 @@ def _cleanup_expired_sessions() -> None:
 
 @router.post("/login", response_model=LoginResponse)
 async def start_login(
+    request: Request,
     background_tasks: BackgroundTasks,
     region: str = Query(default=None, description="AWS region for authentication"),
     start_url: str = Query(default=None, description="SSO start URL for organization"),
@@ -251,6 +265,7 @@ async def start_login(
             device_code=device_auth["deviceCode"],
             interval=device_auth["interval"],
             expires_in=device_auth["expiresIn"],
+            app=request.app,
         )
 
         logger.info(

@@ -39,6 +39,7 @@ from kiro.config import (
     update_credential_status,
     get_kiro_refresh_url,
     get_aws_sso_oidc_url,
+    load_gateway_credentials,
 )
 from kiro.utils import get_machine_fingerprint
 
@@ -87,6 +88,31 @@ class AccountManager:
                 account["enabled"] = True
             if "failureCount" not in account:
                 account["failureCount"] = 0
+
+    def reload_credentials(self) -> int:
+        """
+        Reload credentials from storage file.
+
+        Updates internal accounts list with latest credentials from file.
+        Preserves current index position if possible.
+
+        Returns:
+            Number of accounts loaded after reload
+        """
+        new_credentials = load_gateway_credentials()
+
+        self._accounts = new_credentials
+        for account in self._accounts:
+            if "enabled" not in account:
+                account["enabled"] = True
+            if "failureCount" not in account:
+                account["failureCount"] = 0
+
+        if self._current_index >= len(self._accounts) and len(self._accounts) > 0:
+            self._current_index = 0
+
+        logger.info(f"Reloaded {len(self._accounts)} account(s) from storage")
+        return len(self._accounts)
 
     def get_enabled_accounts(self) -> list[tuple[int, dict]]:
         """
