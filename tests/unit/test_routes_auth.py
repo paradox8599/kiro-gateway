@@ -557,16 +557,23 @@ class TestAuthSessionManagement:
             )
             mock_flow_class.return_value = mock_flow
 
-            with patch("kiro.routes_auth.save_gateway_credentials") as mock_save:
-                print("Action: Creating login session...")
-                login_response = test_client.post("/auth/login")
-                session_id = login_response.json()["session_id"]
+            with patch("kiro.routes_auth.add_or_update_credential") as mock_save:
+                with patch(
+                    "kiro.routes_auth._fetch_user_email",
+                    new=AsyncMock(return_value="test@example.com"),
+                ):
+                    print("Action: Creating login session...")
+                    login_response = test_client.post("/auth/login")
+                    session_id = login_response.json()["session_id"]
 
-                print("Action: Waiting for background task to complete...")
-                import time
+                    print("Action: Waiting for background task to complete...")
+                    import time
 
-                time.sleep(0.5)
+                    time.sleep(0.5)
 
-                print("Verification: Checking session status was updated...")
-                assert session_id in _auth_sessions
-                assert _auth_sessions[session_id]["status"] in ["pending", "complete"]
+                    print("Verification: Checking session status was updated...")
+                    assert session_id in _auth_sessions
+                    assert _auth_sessions[session_id]["status"] in [
+                        "pending",
+                        "complete",
+                    ]

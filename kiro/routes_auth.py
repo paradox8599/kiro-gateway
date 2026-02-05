@@ -30,12 +30,36 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
 from loguru import logger
 
 from kiro.device_auth import DeviceAuthFlow, DeviceAuthError
-from kiro.config import save_gateway_credentials, REGION
+from kiro.config import add_or_update_credential, REGION
+
+
+async def _fetch_user_email(access_token: str, region: str) -> str:
+    """Fetch user email via getUsageLimits API."""
+    url = f"https://q.{region}.amazonaws.com/getUsageLimits"
+    params = {
+        "isEmailRequired": "true",
+        "origin": "AI_EDITOR",
+        "resourceType": "AGENTIC_REQUEST",
+    }
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "x-amz-user-agent": "kiro-gateway",
+        "amz-sdk-invocation-id": str(uuid.uuid4()),
+        "amz-sdk-request": "attempt=1;max=1",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    return data.get("userInfo", {}).get("email", "")
 
 
 class LoginResponse(BaseModel):
@@ -99,6 +123,13 @@ async def _poll_for_token_background(
 
         token_expires_in = token_response.get("expiresIn", 3600)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_expires_in)
+        region = _auth_sessions[session_id].get("region", REGION)
+
+        try:
+            email = await _fetch_user_email(token_response["accessToken"], region)
+        except Exception as e:
+            logger.warning(f"[{session_id[:8]}] Could not fetch email: {e}")
+            email = ""
 
         credentials = {
             "accessToken": token_response["accessToken"],
@@ -106,10 +137,13 @@ async def _poll_for_token_background(
             "clientId": client_id,
             "clientSecret": client_secret,
             "expiresAt": expires_at.isoformat(),
-            "region": _auth_sessions[session_id].get("region", REGION),
+            "region": region,
+            "email": email,
+            "enabled": True,
+            "failureCount": 0,
         }
 
-        save_gateway_credentials(credentials)
+        add_or_update_credential(credentials)
         logger.info(f"[{session_id[:8]}] Credentials saved successfully")
 
         if session_id in _auth_sessions:
