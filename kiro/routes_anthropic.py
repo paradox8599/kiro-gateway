@@ -291,9 +291,19 @@ async def messages(
             status_code=503, detail="Failed to get authentication token"
         )
 
+    from kiro.model_resolver import normalize_model_name
+
+    normalized_model, has_thinking_suffix = normalize_model_name(request_data.model)
+
     thinking_enabled = (
         request_data.thinking is not None and request_data.thinking.type == "enabled"
-    )
+    ) or has_thinking_suffix
+
+    if has_thinking_suffix:
+        request_data.model = normalized_model
+        logger.debug(
+            f"Detected -thinking suffix, enabled thinking mode and normalized model to: {normalized_model}"
+        )
 
     try:
         kiro_payload = anthropic_to_kiro(
