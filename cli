@@ -11,12 +11,16 @@ help_text() {
     echo "  status <session_id>  Check login status"
     echo "  cancel <session_id>  Cancel login session"
     echo "  usage                Show account usage"
+    echo "  enable <index>       Enable an account"
+    echo "  disable <index>      Disable an account"
     echo ""
     echo "Examples:"
     echo "  $0 login                                           # Builder ID login"
     echo "  $0 login https://my-company.awsapps.com/start      # Organization SSO"
     echo "  $0 status abc123-uuid"
     echo "  $0 usage"
+    echo "  $0 enable 0                                        # Enable account at index 0"
+    echo "  $0 disable 1                                       # Disable account at index 1"
     echo ""
     echo "Environment:"
     echo "  KIRO_GATEWAY_URL      Base URL (default: http://localhost:8000)"
@@ -34,9 +38,11 @@ interactive() {
     echo "  3) Check login status"
     echo "  4) Cancel login session"
     echo "  5) Show usage"
-    echo "  6) Exit"
+    echo "  6) Enable account"
+    echo "  7) Disable account"
+    echo "  8) Exit"
     echo ""
-    read -p "  Select option [1-6]: " choice
+    read -p "  Select option [1-8]: " choice
     echo ""
     
     case "$choice" in
@@ -65,6 +71,14 @@ interactive() {
             show_usage
             ;;
         6)
+            read -p "  Enter account index: " account_index
+            enable_account "$account_index"
+            ;;
+        7)
+            read -p "  Enter account index: " account_index
+            disable_account "$account_index"
+            ;;
+        8)
             exit 0
             ;;
         *)
@@ -213,14 +227,64 @@ show_usage() {
     fi
     
     echo "$response" | jq -r '
-.accounts[] | 
+.accounts | to_entries[] |
 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Account: \(.email)
-Status:  \(if .enabled then "✓ Enabled" else "✗ Disabled" end)\(if .failure_count > 0 then " (failures: \(.failure_count))" else "" end)
-Plan:    \(.usage.subscription_info.subscription_title // "N/A")
-Reset:   \(.usage.days_until_reset // "N/A") days
-\(if .error then "Error:   \(.error)" else (.usage.usage_breakdown | map("  • \(.display_name): \(.current_usage)/\(.usage_limit)") | join("\n")) end)"
+[\(.key)] \(.value.email)
+Status:  \(if .value.enabled then "✓ Enabled" else "✗ Disabled" end)\(if .value.failure_count > 0 then " (failures: \(.value.failure_count))" else "" end)
+Plan:    \(.value.usage.subscription_info.subscription_title // "N/A")
+Reset:   \(.value.usage.days_until_reset // "N/A") days
+\(if .value.error then "Error:   \(.value.error)" else (.value.usage.usage_breakdown | map("  • \(.display_name): \(.current_usage)/\(.usage_limit)") | join("\n")) end)"
 '
+}
+
+enable_account() {
+    local index="$1"
+    
+    if [ -z "$index" ]; then
+        echo "Error: account index required"
+        help_text
+    fi
+    
+    if [ -z "$API_KEY" ]; then
+        echo "Error: KIRO_GATEWAY_API_KEY required"
+        echo "  export KIRO_GATEWAY_API_KEY=your-api-key"
+        exit 1
+    fi
+    
+    response=$(curl -s -X POST -H "Authorization: Bearer $API_KEY" "$BASE_URL/accounts/$index/enable")
+    
+    if echo "$response" | grep -q '"detail"'; then
+        echo "Error: $response"
+        exit 1
+    fi
+    
+    message=$(echo "$response" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+    echo "✓ $message"
+}
+
+disable_account() {
+    local index="$1"
+    
+    if [ -z "$index" ]; then
+        echo "Error: account index required"
+        help_text
+    fi
+    
+    if [ -z "$API_KEY" ]; then
+        echo "Error: KIRO_GATEWAY_API_KEY required"
+        echo "  export KIRO_GATEWAY_API_KEY=your-api-key"
+        exit 1
+    fi
+    
+    response=$(curl -s -X POST -H "Authorization: Bearer $API_KEY" "$BASE_URL/accounts/$index/disable")
+    
+    if echo "$response" | grep -q '"detail"'; then
+        echo "Error: $response"
+        exit 1
+    fi
+    
+    message=$(echo "$response" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+    echo "✗ $message"
 }
 
 if [ -z "$1" ]; then
@@ -240,6 +304,12 @@ case "$1" in
         ;;
     usage)
         show_usage
+        ;;
+    enable)
+        enable_account "$2"
+        ;;
+    disable)
+        disable_account "$2"
         ;;
     *)
         help_text
